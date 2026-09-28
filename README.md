@@ -13,11 +13,7 @@ Launching an agent on a task, starting a fresh session in a project, scheduling 
 
 *The desk view, rendered from the test suite's invented sample projects.*
 
-## Status: pre-release, published as is
-
-This is a personal project, published in the state it is in, known bugs included. It has run on exactly one machine (Windows 11, MSYS2). Expect rough edges.
-
-### Known issues
+## Known issues
 
 - **tmux freezes.** The tmux server has frozen under MSYS2 during window resizes and restarts. The cause is not known yet. One trigger that is known: moving a pane that runs a native Windows program (such as `claude.exe`) into another window with `join-pane` wedged the whole server once. The "stage a session beside the deck" feature is switched off for that reason.
 - **Codex's interactive screen does not run under MSYS2** (upstream: openai/codex#6994, closed as not planned). Pantheon runs Codex headless only (`codex exec`), or opens interactive Codex in a separate native Windows Terminal window.
