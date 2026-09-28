@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# pantheon-delegate -- Path A/B router. A separate entry point from bin/pantheon.
+#
+#   pantheon-delegate "read CHECKPOINT.md and summarize open threads"
+#   pantheon-delegate --tier planner "design the ingestion refactor"
+#   pantheon-delegate --model claude-opus-4-8 --perm bypassPermissions "port the reader to v5"
+#   pantheon-delegate --dir /c/some/project "..."
+#
+# Detects whether the pantheon tmux (session 0) is reachable over ssh; if so the worker opens as
+# a new window there (Path A, deck-visible). If not, this shells straight to the existing
+# `delegate-claude` helper (Path B; a separate script, not part of this repo) and prints its result -- same command either way.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$ROOT/.venv/bin/python"
+exec "$PY" -m pantheon.dispatch.delegate "$@"

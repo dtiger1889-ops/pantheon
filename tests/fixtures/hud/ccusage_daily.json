@@ -1,0 +1,69 @@
+{
+  "daily": [
+    {
+      "agent": "all",
+      "period": "2026-08-31",
+      "metadata": {
+        "agents": [
+          "claude",
+          "codex"
+        ]
+      },
+      "totalCost": 58.2304,
+      "totalTokens": 95000000,
+      "agents": [
+        {
+          "agent": "claude",
+          "totalCost": 54.1122,
+          "totalTokens": 90684605,
+          "modelsUsed": [
+            "claude-opus-5"
+          ]
+        },
+        {
+          "agent": "codex",
+          "totalCost": 4.1182,
+          "totalTokens": 5333381,
+          "modelsUsed": [
+            "gpt-5.6-sol"
+          ]
+        }
+      ]
+    },
+    {
+      "agent": "all",
+      "period": "2026-09-01",
+      "metadata": {
+        "agents": [
+          "claude",
+          "codex"
+        ]
+      },
+      "totalCost": 90.8017,
+      "totalTokens": 138219632,
+      "agents": [
+        {
+          "agent": "claude",
+          "totalCost": 77.1522,
+          "totalTokens": 116200874,
+          "modelsUsed": [
+            "claude-opus-5",
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "agent": "codex",
+          "totalCost": 13.6495,
+          "totalTokens": 22018758,
+          "modelsUsed": [
+            "gpt-5.6-sol"
+          ]
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "totalCost": 149.0321,
+    "totalTokens": 233219632
+  }
+}

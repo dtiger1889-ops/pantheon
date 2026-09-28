@@ -1,0 +1,14 @@
+{"timestamp": "2026-09-06T12:00:00Z", "type": "session_meta", "payload": {"cwd": "C:/x/proj", "originator": "codex-cli", "cli_version": "0.9.0"}}
+{"timestamp": "2026-09-06T12:00:01Z", "type": "turn_context", "payload": {"cwd": "C:/x/proj"}}
+{"timestamp": "2026-09-06T12:00:02Z", "type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "You are Codex, a coding agent."}]}}
+{"timestamp": "2026-09-06T12:00:03Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<app-context>repo facts and AGENTS.md contents here</app-context>"}, {"type": "input_text", "text": "please fix the pipe timeout in the runner"}]}}
+{"timestamp": "2026-09-06T12:00:04Z", "type": "response_item", "payload": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "The runner blocks reading stdin under MSYS2 python."}]}}
+{"timestamp": "2026-09-06T12:00:05Z", "type": "response_item", "payload": {"type": "reasoning", "summary": []}}
+{"timestamp": "2026-09-06T12:00:06Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "I'll switch the runner to file-redirection instead of a pipe."}]}}
+{"timestamp": "2026-09-06T12:00:07Z", "type": "world_state", "payload": {"state": {"collaboration_mode": {"model": "gpt-5.1-codex"}}}}
+{"timestamp": "2026-09-06T12:00:08Z", "type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": {"cmd": "python -c \"import sys; print('this line is definitely over sixty characters total')\""}}}
+{"timestamp": "2026-09-06T12:00:09Z", "type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "call_1", "output": [{"type": "text", "text": "wrote 42 bytes"}]}}
+{"timestamp": "2026-09-06T12:00:10Z", "type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call_2", "name": "apply_patch", "input": {"patch": "diff --git a b"}}}
+{"timestamp": "2026-09-06T12:00:11Z", "type": "token_usage_record", "payload": {"usage": {"total_tokens": 4321}}}
+{"timestamp": "2026-09-06T12:00:12Z", "type": "event_msg", "payload": {"type": "task_complete"}}
+{broken json here ,,,

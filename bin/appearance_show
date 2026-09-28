@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# appearance_show -- print the resolved font (from Windows Terminal, or the last-applied values
+# remembered in pantheon.toml when WT isn't found here) and the active palette, as JSON
+#. Read-only.
+#   bin/appearance_show
+PANTHEON_ROOT_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$PANTHEON_ROOT_DEFAULT}"
+PY="$PANTHEON_ROOT_DEFAULT/.venv/bin/python"
+export PATH="/usr/bin:$PATH" MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+cd "$ROOT" || exit 1
+
+if [ ! -x "$PY" ]; then
+  echo "could not find the MSYS2 venv python at $PY" >&2
+  exit 1
+fi
+
+exec "$PY" -m pantheon.appearance.show

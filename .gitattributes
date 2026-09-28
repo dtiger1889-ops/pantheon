@@ -1,0 +1,10 @@
+# This repo is checked out on Windows with core.autocrlf=true, which rewrites LF to CRLF.
+# MSYS2 bash cannot run a script with CRLF line endings at all -- the carriage return ends up
+# in the `#!/usr/bin/env bash` line and the shell reports "No such file or directory".
+# Everything under bin/ and every .sh is therefore pinned to LF, in the repo and on disk.
+bin/* text eol=lf
+*.sh text eol=lf
+
+# Fixture files are compared byte for byte in tests; keep them off the CRLF conveyor too.
+tests/fixtures/** text eol=lf
+*.ico binary

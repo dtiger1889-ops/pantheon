@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# pantheon -- start or attach the command station (tmux session "pantheon").
+# Run from an MSYS2 shell (the phone lands in one). Windows: 0 deck, 1 queue, 2 hud.
+# Window 0 is the combined desk view (budget strip + agents + queue) at 120 columns and wider,
+# and just the agents panel narrower than that (the phone), so one window serves both.
+#   pantheon            start if needed, then attach
+#   pantheon --no-attach  start only (for scripts)
+#   pantheon --restart  restart the deck, queue and budget windows only; agent windows stay
+#   pantheon --restart --all  end the whole tmux session, agent windows included, and start fresh
+#                        -- the way to pick up new code; the desktop icon only attaches
+#   pantheon --tag-good tag this exact code known-good-YYYYMMDD-HHMM and push the tag --
+#                        do it once the user has actually used the deck and it behaved
+#   pantheon --rollback put the newest known-good tag's pantheon/ and bin/ back in place and
+#                        restart the deck windows -- the way out of a bad change
+#   pantheon --keys     print the key list and exit
+#   pantheon --connectors  print which MCP servers this folder's CLI sessions see, and exit
+#   pantheon --tools     open the read-only slash-skills/guards/hooks inventory, and exit
+#   pantheon --settings  open the appearance Settings screen: font into Windows Terminal,
+#                        colour palette presets and per-token overrides -- see pantheon/keys.py
+#                        for its own key list (the deck's ? overlay does not chain to it yet)
+#   pantheon --wide     accepted for old habits; window 0 is always the combined view now
+#   pantheon --notes     open the prompt scratchpad --
+#                        creates the "NOTES" window on first use, by name, never at a fixed
+#                        index, so it never collides with an agent window a session opened
+#   pantheon --notes-ensure  create the NOTES window if it is missing, select nothing (what the
+#                        F4 key binding runs first, so F4 works before --notes ever ran)
+#   pantheon new "summary" --project x [--tier now|soon|someday] [--fable]
+#                        write one task into the standalone folder, no Obsidian needed
+#   pantheon open <project> [--who claude|codex-pc|codex-headless] [--message "..."]
+#                        start a fresh session in a project folder from a shell, no deck needed
+#   pantheon --pit       join every agent window's pane into one tiled PIT window --
+#                        `P` on the deck does the same, and shows you there
+#   pantheon --unpit     break the PIT's panes back out into their own windows, unharmed
+#   from ANY window, no prefix: `[keys] back_to_deck` in pantheon.toml (F12 default) jumps
+#   straight back to the deck -- shown once on the status line the moment you jump away
+# First run with no pantheon.toml: three plain questions (vault, projects folder, tmux session
+# name), then it writes the file and keeps going -- see pantheon/wizard.py.
+# This is always the real checkout this script lives in -- bin/pantheon is the canonical
+# launcher, never run from a worktree (tests/test_launcher_tmux.py drives this same file).
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$ROOT/.venv/bin/python"
+# The tmux session name. PANTHEON_SESSION lets the launcher test lane
+# (tests/test_launcher_tmux.py) drive this same script against a throwaway session.
+SESSION="${PANTHEON_SESSION:-pantheon}"
+export PATH="/c/Program Files/nodejs:$PATH"   # npx shells out to bare `node`
+export PYTHONUNBUFFERED=1
+cd "$ROOT" || exit 1
+
+# Known-good tags: the way back when a change breaks the desk. `--tag-good` marks code the user has
+# actually used; `--rollback` puts the newest such tag's deck code back and restarts the windows.
+# Only pantheon/ and bin/ move -- nothing else in the repo is touched, and nothing is deleted from
+# git history, so a rollback is undone with `git checkout main -- pantheon bin`.
+GIT="$(command -v git 2>/dev/null || echo '/c/Program Files/Git/cmd/git.exe')"
+
+if [ "$1" = "--tag-good" ]; then
+  TAG="known-good-$(date +%Y%m%d-%H%M)"
+  if ! "$GIT" -C "$ROOT" tag "$TAG"; then
+    echo "could not create the tag $TAG"
+    exit 1
+  fi
+  if "$GIT" -C "$ROOT" push origin "$TAG"; then
+    echo "tagged $TAG and pushed it -- pantheon --rollback comes back to this code"
+  else
+    echo "tagged $TAG locally, but the push failed -- push it when the network is back"
+    exit 1
+  fi
+  exit 0
+fi
+
+if [ "$1" = "--rollback" ]; then
+  TAG="$("$GIT" -C "$ROOT" tag --list 'known-good-*' --sort=-refname | head -n 1)"
+  if [ -z "$TAG" ]; then
+    echo "no known-good-* tag exists yet, so there is nothing to roll back to."
+    echo "make one after a session where the deck behaved: pantheon --tag-good"
+    exit 1
+  fi
+  # A rollback overwrites the working copy of pantheon/ and bin/. Uncommitted work there would be
+  # lost, so stop instead and say so.
+  if [ -n "$("$GIT" -C "$ROOT" status --porcelain -- pantheon bin)" ]; then
+    echo "pantheon/ or bin/ has uncommitted changes; a rollback would discard them."
+    echo "commit or stash them first, then run pantheon --rollback again."
+    exit 1
+  fi
+  if ! "$GIT" -C "$ROOT" checkout "$TAG" -- pantheon bin; then
+    echo "could not check out $TAG"
+    exit 1
+  fi
+  echo "deck code rolled back to $TAG (pantheon/ and bin/ only); restarting the deck windows"
+  exec "$0" --restart
+fi
+
+if [ "$1" = "--keys" ]; then
+  "$PY" -c 'import pantheon.keys as k, pantheon.config as c; cfg = c.load(); print("source:", k.source_kind(cfg)); print(); print(k.KEYS_TEXT)' 2>/dev/null || cat <<'KEYS'
+deck (window 0), the conversation cards: arrows move card to card  Tab next card, then next panel  Enter open one card full width with a box to type to that agent  Esc back to all the cards
+deck (window 0), the whole window: t show/hide the task list beside them  f swap the cards for the old table of columns  n new session  P pit (tile every agent)  ? keys  q quit
+SESSIONS list (desk width, left of the cards): 1-9 jump to that agent's window  arrows point the cards at a session  Enter open it full width  j jump to its window  a finished conversation opens read-only
+the table of columns (f): j jump to agent's window  k kill (asks y/n)  o open project folder  c copy session id  m model  e effort  p permission mode  h hand to the other provider  l Codex log  Enter every action  r refresh
+queue (window 1): 1 Now  2 Decide  3 Quick wins  4 Plate  5 Someday  6 Notes  ] [ tabs  Enter detail  Esc back  / search  p project  w work this (claude)  x choose who  o open Sprints folder  ? keys  q quit
+hud (window 2): r refresh  ? keys  q quit
+notes (pantheon --notes / F4): Ctrl+T new tab  F2 rename  Ctrl+Tab / Ctrl+Shift+Tab switch tabs  Ctrl+Space slash commands  i insert into agent (or the button)  q quit
+from any window, no prefix: F1 deck  F2 queue  F3 budget  F4 notes  back_to_deck key (F12 default, pantheon.toml [keys]) also jumps to the deck
+KEYS
+  exit 0
+fi
+
+if [ "$1" = "--connectors" ]; then
+  "$PY" -c "from pantheon import connectors; print(connectors.report('$ROOT'))" 2>/dev/null \
+    || echo "could not read pantheon/connectors.py output; is the MSYS2 venv set up?"
+  exit 0
+fi
+
+if [ "$1" = "--tools" ]; then
+  # the read-only slash-skills/guards/hooks inventory, its own window -- not a tmux window
+  # bin/pantheon manages, so it opens and exits on its own rather than joining the session.
+  exec "$PY" -m pantheon.tools
+fi
+
+if [ "$1" = "--settings" ]; then
+  # the appearance Settings screen (font into Windows Terminal, palette presets and
+  # overrides), its own window -- same pattern as --tools above.
+  exec "$PY" -m pantheon.appearance
+fi
+
+if [ "$1" = "new" ]; then
+  shift
+  exec "$PY" -m pantheon.tasks.new_task "$@"
+fi
+
+if [ "$1" = "open" ]; then
+  shift
+  exec "$PY" -m pantheon.dispatch.projects open "$@"
+fi
+
+# the pit -- join every agent window's pane into one tiled `PIT` window. `PANTHEON_SESSION`
+# stands in for `pantheon.toml`'s `tmux_session` here (same override the launcher test lane
+# already relies on) so these two flags stay safe to drive against a throwaway session too.
+if [ "$1" = "--pit" ]; then
+  "$PY" -c "import os, dataclasses, pantheon.config as c, pantheon.pit.tmux_pit as p; cfg = c.load(); cfg = dataclasses.replace(cfg, tmux_session=os.environ.get('PANTHEON_SESSION', cfg.tmux_session)); result = p.enter_pit(cfg, tmux=cfg.tools.tmux); print('pit: ' + str(len(result['joined'])) + ' agent(s) tiled together in PIT (window ' + str(result['pit_index']) + ')') if result['joined'] else print('already in the pit' if result.get('already') else 'no agent windows to tile')"
+  if [ -n "$TMUX" ]; then
+    tmux select-window -t "$SESSION:PIT" 2>/dev/null
+  fi
+  exit 0
+fi
+
+if [ "$1" = "--unpit" ]; then
+  "$PY" -c "import os, dataclasses, pantheon.config as c, pantheon.pit.tmux_pit as p; cfg = c.load(); cfg = dataclasses.replace(cfg, tmux_session=os.environ.get('PANTHEON_SESSION', cfg.tmux_session)); restored = p.leave_pit(cfg, tmux=cfg.tools.tmux); print('pit: ' + str(len(restored)) + ' window(s) restored') if restored else print('was not in the pit')"
+  if [ -n "$TMUX" ]; then
+    tmux select-window -t "$SESSION:0" 2>/dev/null
+  fi
+  exit 0
+fi
+
+if [ "$1" = "--notes" ] || [ "$1" = "--notes-ensure" ]; then
+  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "no pantheon session running yet; start it first with: pantheon"
+    exit 1
+  fi
+  # By name, not a fixed index: agent windows are opened dynamically at whatever index tmux
+  # hands out next, so claiming a fixed slot for "notes" at startup would collide with one sooner
+  # or later. Created once, on first use; every later `--notes` (or F4) just selects it.
+  # `-d`: create it in the background -- the F4 binding does its own select-window in the
+  # pressing client's context right after this.
+  wrap() { echo "bash -c '\"$PY\" -m $1; echo; echo \"$1 exited - details in state/pantheon.log; press Enter to close\"; while ! read -t 30 -r _; do tmux -S \"\${TMUX%%,*}\" has-session 2>/dev/null || exit 0; done'"; }
+  if ! tmux list-windows -t "$SESSION" -F "#{window_name}" 2>/dev/null | grep -qx NOTES; then
+    tmux new-window -d -t "$SESSION" -n NOTES -c "$ROOT" "$(wrap pantheon.notes)"
+  fi
+  if [ "$1" = "--notes-ensure" ]; then
+    exit 0
+  fi
+  tmux select-window -t "$SESSION:NOTES"
+  if [ -n "$TMUX" ]; then
+    tmux switch-client -t "$SESSION" \; select-window -t "$SESSION:NOTES"
+    exit 0
+  fi
+  exec "$0"
+fi
+
+# Each window runs its app under a wrapper so a crash leaves a readable message, not a vanished window.
+wrap() { echo "bash -c '\"$PY\" -m $1; echo; echo \"$1 exited - details in state/pantheon.log; press Enter to close\"; while ! read -t 30 -r _; do tmux -S \"\${TMUX%%,*}\" has-session 2>/dev/null || exit 0; done'"; }
+
+# A tmux server started from inside a Claude Code session inherits CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1,
+# and every `claude` launched in any window is then hardened (permission mode forced to default,
+# trust re-prompt) -- found while testing the launcher. Scrub it from the server every start.
+unset CLAUDE_CODE_SUBPROCESS_ENV_SCRUB CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+if tmux info >/dev/null 2>&1; then
+  tmux set-environment -gu CLAUDE_CODE_SUBPROCESS_ENV_SCRUB 2>/dev/null
+  tmux set-environment -gu CLAUDECODE 2>/dev/null
+fi
+
+# First run in this folder: no settings file yet. Three plain questions, then it writes one and
+# keeps going. `--no-attach` means a script is driving this, so it never waits on
+# a question -- it takes the suggested answer for everything instead.
+if [ ! -f "$ROOT/pantheon.toml" ]; then
+  if [ "$1" = "--no-attach" ]; then
+    "$PY" -m pantheon.wizard --yes
+  else
+    "$PY" -m pantheon.wizard
+  fi
+fi
+
+if [ "$1" = "--restart" ]; then
+  shift
+  if [ "$1" = "--all" ]; then
+    # The old full restart: the base session and every per-client session grouped with it --
+    # and EVERY window in them, agents included. Only on request.
+    shift
+    for s in $(tmux list-sessions -F "#{session_name}" 2>/dev/null); do
+      case "$s" in "$SESSION"|"$SESSION"-*) tmux kill-session -t "$s" 2>/dev/null;; esac
+    done
+  elif tmux has-session -t "$SESSION" 2>/dev/null; then
+    # Pick up new deck code WITHOUT touching the agent windows.
+    # Windows 0-2 are the deck, the queue and the budget: respawn each in place.
+    # a session staged beside the deck is a pane in window 0, and respawn -k kills every
+    # pane there -- move it back to its own window first; exit 3 = it would not move, so stop.
+    PANTHEON_SESSION="$SESSION" "$PY" -m pantheon.stage release
+    if [ $? -eq 3 ]; then echo "pantheon: a session beside the deck would not move back to its own window; not restarting"; exit 1; fi
+    HUD_CMD="bash -c '\"$PY\" -m pantheon.hud.collector & C=\$!; \"$PY\" -m pantheon.hud; kill \$C 2>/dev/null; echo; echo \"pantheon.hud exited - details in state/pantheon.log; press Enter to close\"; read'"
+    # By NAME, never by index. A missing fixed window is re-created, at its
+    # usual index when that is free.
+    fixed_window() {
+      if tmux list-windows -t "$SESSION" -F "#{window_name}" 2>/dev/null | grep -qx "$1"; then
+        tmux respawn-window -k -t "$SESSION:=$1" -c "$ROOT" "$3"
+      else
+        tmux new-window -d -t "$SESSION:$2" -n "$1" -c "$ROOT" "$3" 2>/dev/null \
+          || tmux new-window -d -t "$SESSION:" -n "$1" -c "$ROOT" "$3"
+      fi
+    }
+    fixed_window DECK 0 "$(wrap pantheon.deck)"
+    fixed_window QUEUE 1 "$(wrap pantheon.queue)"
+    fixed_window BUDGET 2 "$HUD_CMD"
+    # "NOTES" is opened on demand (`pantheon --notes`), by name at whatever index it landed
+    # on -- respawn it only if it exists; do nothing otherwise.
+    if tmux list-windows -t "$SESSION" -F "#{window_name}" 2>/dev/null | grep -qx NOTES; then
+      tmux respawn-window -k -t "$SESSION:NOTES" -c "$ROOT" "$(wrap pantheon.notes)"
+    fi
+    tmux select-window -t "$SESSION:=DECK"
+    echo "pantheon: deck, queue and budget restarted; agent windows kept (--restart --all restarts everything)"
+  fi
+fi
+
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  # PANTHEON_STATE_DIR (pantheon/config.py) lets the launcher test lane keep its throwaway deck's
+  # log and events out of the live deck's state folder; unset, this is the project's own state/.
+  STATE="${PANTHEON_STATE_DIR:-$ROOT/state}"
+  mkdir -p "$STATE/agents" "$STATE/statusline" "$STATE/dispatch" "$STATE/limits"
+  tmux new-session -d -s "$SESSION" -n DECK  -c "$ROOT" "$(wrap pantheon.deck)"
+  tmux new-window  -t "$SESSION" -n QUEUE   -c "$ROOT" "$(wrap pantheon.queue)"
+  # The budget window: the usage collector runs in the background of the same pane (its own
+  # single-threaded process -- pantheon/hud/collector.py says why) and ends when the window does.
+  HUD_CMD="bash -c '\"$PY\" -m pantheon.hud.collector & C=\$!; \"$PY\" -m pantheon.hud; kill \$C 2>/dev/null; echo; echo \"pantheon.hud exited - details in state/pantheon.log; press Enter to close\"; read'"
+  tmux new-window  -t "$SESSION" -n BUDGET  -c "$ROOT" "$HUD_CMD"
+  # the governor and the notifier each get their own background window/pane only when
+  # they are switched on in pantheon.toml -- a fresh install or a "not yet trusted" state
+  # opens no extra window at all. Both share the "gov" window (a split, when both are on) since
+  # neither wants the viewer's attention by default; either shows up alone in "gov" when only one
+  # is enabled.
+  GOV_ENABLED="$("$PY" -c 'import pantheon.config as c; print(c.load().governor_settings().enabled)' 2>/dev/null)"
+  NOTIFY_ENABLED="$("$PY" -c 'import pantheon.config as c; print(c.load().notify_settings().enabled)' 2>/dev/null)"
+  if [ "$GOV_ENABLED" = "True" ]; then
+    tmux new-window -t "$SESSION" -n gov -c "$ROOT" "$(wrap pantheon.governor.runner)"
+    if [ "$NOTIFY_ENABLED" = "True" ]; then
+      tmux split-window -t "$SESSION:gov" -c "$ROOT" "$(wrap pantheon.notify.runner)"
+    fi
+  elif [ "$NOTIFY_ENABLED" = "True" ]; then
+    tmux new-window -t "$SESSION" -n gov -c "$ROOT" "$(wrap pantheon.notify.runner)"
+  fi
+  if [ -x "$ROOT/bin/hud_line" ]; then
+    # Two status lines: window list on the first, the usage HUD on the second. On a 65-column
+    # phone the HUD in status-right pushed the window list off the edge.
+    tmux set-option -t "$SESSION" status 2
+    tmux set-option -t "$SESSION" status-interval 60
+    tmux set-option -t "$SESSION" status-right ""
+    # Setting ONLY [1] on the session blanks [0] (array options do not inherit per index), which
+    # erased the window list on the user's phone. Copy the global line 0 explicitly.
+    tmux set-option -t "$SESSION" "status-format[0]" "$(tmux show-options -g -v 'status-format[0]')"
+    tmux set-option -t "$SESSION" "status-format[1]" "#[align=left]#($ROOT/bin/hud_line)"
+  fi
+  # Without this, tmux's default automatic-rename overwrites the `-n DECK`/`-n QUEUE`/`-n BUDGET`
+  # names with the running program's path the moment each wrapped python process starts, so the
+  # status line showed the interpreter path instead of the role label. Off for
+  # every window in this session -- agent windows opened later (o, dispatch) keep whatever name
+  # the shell/program that started them sets, since automatic-rename only stops the OVERWRITE, it
+  # doesn't freeze the name at creation time.
+  tmux set-window-option -t "$SESSION" -g automatic-rename off
+  tmux set-option -t "$SESSION" allow-rename off
+  # The window list names the key that reaches each window (F1 DECK, F2 QUEUE, F3 BUDGET, F4
+  # NOTES); windows the deck opens later (agents, shells, the pit) carry a plain dot and their
+  # name -- never a program path, and never a bare tmux index: no key
+  # reaches "3" or "4", so a number there read as a broken F-key. Agent windows are reached from the deck (j,
+  # the switcher rail). Matched by NAME, not index, since "NOTES" is opened on demand at
+  # whatever index tmux hands out next -- an index check would mislabel it (or a later agent
+  # window) once it isn't always window 3. Names are uppercase.
+  FKEY='#{?#{==:#W,DECK},F1,#{?#{==:#W,QUEUE},F2,#{?#{==:#W,BUDGET},F3,#{?#{==:#W,NOTES},F4,·}}}}'
+  # -w -g: window options must be set at window scope for EVERY window.
+  tmux set-option -w -g -t "$SESSION" window-status-format " $FKEY #W "
+  tmux set-option -w -g -t "$SESSION" window-status-current-format "#[bold,reverse] $FKEY #W #[default]"
+  tmux set-option -t "$SESSION" window-status-separator ""
+  tmux select-window -t "$SESSION:0"
+fi
+# Windows the deck opens (o, dispatch) get bash, not the server's default shell (pwsh on this box).
+tmux set-option -t "$SESSION" default-shell /usr/bin/bash
+tmux set-option -t "$SESSION" default-command /usr/bin/bash
+# F1 deck, F2 queue, F3 budget -- the three fixed-index windows, from anywhere, no prefix. `-t :N` is the pressing client's OWN session: each
+# client has its own grouped session now.
+# By exact NAME.
+tmux bind -n F1 select-window -t ":=DECK"
+tmux bind -n F2 select-window -t ":=QUEUE"
+tmux bind -n F3 select-window -t ":=BUDGET"
+# F4 NOTES: by NAME, since "NOTES" is opened on demand at whatever index tmux hands out,
+# never a fixed one. The binding first makes sure the window exists (`--notes-ensure`, a
+# blocking run-shell so the select that follows can find it), then selects it in the pressing
+# client's own grouped session -- so F4 works on a fresh deck, not only after `pantheon --notes`
+# had run once.
+# The separator between the two bound commands must reach tmux as a literal `\;` (single-quoted
+# here): a bare `\;` in bash becomes `;`, which tmux reads as "end this bind, run the next
+# command now" -- F4 then bound only the run-shell half.
+tmux bind -n "F4" run-shell "\"$ROOT/bin/pantheon\" --notes-ensure" '\;' select-window -t ":NOTES"
+# part 2 (the way back): a second, separate, prefix-less binding straight to the deck --
+# `[keys] back_to_deck` in pantheon.toml, F12 by default. This is deliberately independent of the
+# F1-F3 loop above even though F1 already reaches the same window: F1's own history here is
+# exactly the F12-collision this key exists to be adjustable against, so the two are never
+# assumed interchangeable. `pantheon.keys_settings` prints the real `bin/pantheon --keys`.
+BACK_KEY="$("$PY" -c 'import pantheon.config as c; print(c.load().keys_settings().back_to_deck)' 2>/dev/null)"
+if [ -n "$BACK_KEY" ]; then
+  tmux bind -n "$BACK_KEY" select-window -t ":=DECK"
+fi
+# Every client keeps its own window size. tmux sizes a window to its attached clients, so
+# each client attaches to its OWN session grouped with the base one -- grouped sessions share the
+# windows but size them per session -- and `aggressive-resize` sizes a window only for the
+# sessions where it is the current window. The base session itself is never attached.
+tmux set-window-option -g aggressive-resize on
+
+[ "$1" = "--no-attach" ] && exit 0
+# Attach. Each client gets its OWN session grouped with the base one, so two viewers (the desk and
+# the phone) keep their own current window -- opening the deck on the phone must not drag the desk
+# off the agent window the user is watching. The base session is never attached. The per-client
+# session dies with its client (the client-detached hook), so they never pile up.
+# This is the second attempt at grouped sessions: the first shipped from a Desktop-app session,
+# untested, and gave a deck with no arrow keys and then a blank terminal. It ships
+# again only because tests/test_launcher_tmux.py now attaches real clients to a throwaway server
+# and checks all of it -- landing window, the other client's window, the deck drawing, arrow keys.
+if [ -n "$TMUX" ]; then
+  tmux switch-client -t "$SESSION" \; select-window -t "$SESSION:0"
+elif CLIENT="$SESSION-$$" && tmux new-session -d -t "$SESSION" -s "$CLIENT" 2>/dev/null; then
+  tmux set-hook -t "$CLIENT" client-detached "kill-session -t $CLIENT"
+  tmux select-window -t "$CLIENT:0"
+  tmux attach -t "$CLIENT"
+else
+  # Grouping refused (an old tmux, or the name is taken): the plain shared attach still works.
+  tmux attach -t "$SESSION" \; select-window -t "$SESSION:0"
+fi

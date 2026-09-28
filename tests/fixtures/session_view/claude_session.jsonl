@@ -1,0 +1,26 @@
+{"type": "system", "subtype": "bridge_status", "timestamp": "2026-09-06T10:00:00Z", "uuid": "sys-1"}
+{"type": "system", "subtype": "info", "timestamp": "2026-09-06T10:00:01Z", "uuid": "sys-2"}
+{"type": "user", "sessionId": "fake-session-0001", "cwd": "C:/x/proj", "gitBranch": "main", "entrypoint": "cli", "timestamp": "2026-09-06T10:00:02Z", "uuid": "u-1", "message": {"role": "user", "content": "hello the user here, please check the launcher"}}
+{"type": "ai-title", "aiTitle": "Launcher check session", "timestamp": "2026-09-06T10:00:03Z", "uuid": "ai-1"}
+{"type": "user", "timestamp": "2026-09-06T10:00:04Z", "uuid": "u-2", "message": {"role": "user", "content": [{"type": "text", "text": "also run the tests please"}]}}
+{"type": "assistant", "effort": "high", "timestamp": "2026-09-06T10:00:05Z", "uuid": "a-1", "message": {"model": "claude-opus-4-8", "usage": {"input_tokens": 100, "output_tokens": 50, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 10}, "content": [{"type": "thinking", "thinking": "I should check the checkpoint file first."}, {"type": "text", "text": "Sure, let me take a look."}, {"type": "tool_use", "id": "toolu_read_1", "name": "Read", "input": {"file_path": "C:/x/proj/CHECKPOINT.md"}}]}}
+{"type": "user", "timestamp": "2026-09-06T10:00:06Z", "uuid": "u-3", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_read_1", "content": "# CHECKPOINT\nstuff", "is_error": false}]}}
+{"type": "assistant", "effort": "high", "timestamp": "2026-09-06T10:00:07Z", "uuid": "a-2", "message": {"model": "claude-opus-4-8", "usage": {"input_tokens": 200, "output_tokens": 80, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 20}, "content": [{"type": "tool_use", "id": "toolu_bash_1", "name": "Bash", "input": {"command": "git status --short && git diff --stat && echo this line is definitely over sixty characters long"}}, {"type": "tool_use", "id": "toolu_grep_1", "name": "Grep", "input": {"pattern": "TODO"}}, {"type": "tool_use", "id": "toolu_glob_1", "name": "Glob", "input": {"pattern": "**/*.py"}}, {"type": "tool_use", "id": "toolu_agent_1", "name": "Agent", "input": {"description": "fix the launcher"}}, {"type": "tool_use", "id": "toolu_skill_1", "name": "Skill", "input": {"skill": "checkpoint"}}, {"type": "tool_use", "id": "toolu_web_1", "name": "WebFetch", "input": {"url": "https://example.com/docs"}}, {"type": "tool_use", "id": "toolu_mcp_1", "name": "mcp__airtable__list_bases", "input": {"baseId": "app123"}}, {"type": "tool_use", "id": "toolu_unknown_1", "name": "CustomToolXYZ", "input": {"foo": "bar value"}}]}}
+{"type": "user", "timestamp": "2026-09-06T10:00:08Z", "uuid": "u-4", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_bash_1", "is_error": true, "content": [{"type": "text", "text": "fatal: not a git repository"}]}]}}
+{"type": "user", "timestamp": "2026-09-06T10:00:09Z", "uuid": "u-5", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_grep_1", "is_error": false, "content": "3 matches"}, {"type": "tool_result", "tool_use_id": "toolu_glob_1", "is_error": false, "content": "12 files"}]}}
+{"type": "attachment", "timestamp": "2026-09-06T10:00:10Z", "uuid": "att-1", "attachment": {"hookName": "PreToolUse"}, "content": "hook output: allowed"}
+{"type": "user", "timestamp": "2026-09-06T10:00:11Z", "uuid": "u-6", "message": {"role": "user", "content": "<system-reminder>some reminder text here</system-reminder>"}}
+{"type": "user", "isSidechain": true, "timestamp": "2026-09-06T10:00:12Z", "uuid": "side-u-1", "message": {"role": "user", "content": "sub-task: investigate the pipe timeout"}}
+{"type": "assistant", "isSidechain": true, "timestamp": "2026-09-06T10:00:13Z", "uuid": "side-a-1", "message": {"model": "claude-sonnet-5", "content": [{"type": "text", "text": "Found it: the runner blocks on stdin."}]}}
+{"type": "user", "timestamp": "2026-09-06T10:00:14Z", "uuid": "u-7", "message": {"role": "user", "content": "thanks, what's next?"}}
+{"type": "custom-title", "customTitle": "Pinned: Launcher Investigation", "timestamp": "2026-09-06T10:00:15Z", "uuid": "ct-1"}
+{"type": "ai-title", "aiTitle": "Should not win", "timestamp": "2026-09-06T10:00:16Z", "uuid": "ai-2"}
+{"type": "queue-operation", "timestamp": "2026-09-06T10:00:17Z", "uuid": "queue-operation-1"}
+{"type": "last-prompt", "timestamp": "2026-09-06T10:00:17Z", "uuid": "last-prompt-1"}
+{"type": "atis-latch", "timestamp": "2026-09-06T10:00:17Z", "uuid": "atis-latch-1"}
+{"type": "bridge-session", "timestamp": "2026-09-06T10:00:17Z", "uuid": "bridge-session-1"}
+{"type": "mode", "timestamp": "2026-09-06T10:00:17Z", "uuid": "mode-1"}
+{"type": "permission-mode", "timestamp": "2026-09-06T10:00:17Z", "uuid": "permission-mode-1"}
+{"type": "file-history-snapshot", "timestamp": "2026-09-06T10:00:17Z", "uuid": "file-history-snapshot-1"}
+{"type": "file-history-delta", "timestamp": "2026-09-06T10:00:17Z", "uuid": "file-history-delta-1"}
+{not valid json,,,

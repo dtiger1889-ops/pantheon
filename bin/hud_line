@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# hud_line -- the one-line budget readout in the tmux status bar.
+# bin/pantheon wires it up as `status-right` on the pantheon session, called every 60 seconds.
+#
+# It reads state/hud.json and nothing else, so it returns in well under a second and can never
+# hang the status bar on Node. The background refresher inside the HUD pane keeps that file
+# current; if nothing has updated it for 5 minutes the line says how long instead of guessing.
+# While the budget window is closed, this command's own quick pass keeps the file current
+#.
+# PANTHEON_ROOT lets a branch be tried out from a git worktree before it is merged; the
+# default is the real project folder (this script's own checkout), which is what tmux and
+# Claude Code will always use.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+# The MSYS2 venv always lives at the real project root, even when ROOT points at a worktree.
+PY="$HERE/.venv/bin/python"
+export PATH="/usr/bin:$PATH" MSYSTEM=MSYS   # the venv python needs the MSYS2 DLLs wherever tmux was started from
+export PYTHONUNBUFFERED=1
+cd "$ROOT" 2>/dev/null || { echo "usage: no reading yet"; exit 0; }
+
+if [ ! -x "$PY" ]; then
+  echo "usage: no reading yet"
+  exit 0
+fi
+
+"$PY" -m pantheon.hud.line 2>/dev/null || echo "usage: no reading yet"
+exit 0

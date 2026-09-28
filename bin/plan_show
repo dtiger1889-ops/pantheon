@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# plan_show -- print what the planner believes, as JSON: tokens per queue-row size, points per
+# 100k tokens for each lane (together / one at a time) with the range and the number of past rows
+# behind it, and one worked estimate per size. Read-only: it reads state/limits/limits.jsonl and
+# changes nothing. The arithmetic lives in pantheon/hud/planning.py, the reading in
+# pantheon/planning/fit.py.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+PY="$HERE/.venv/bin/python"
+export PATH="/c/msys64/usr/bin:/usr/bin:$PATH" MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+cd "$ROOT" 2>/dev/null || { echo '{"error":"pantheon root not found"}'; exit 1; }
+if [ ! -x "$PY" ]; then
+  echo '{"error":"MSYS2 venv python not found"}'
+  exit 1
+fi
+exec "$PY" -m pantheon.planning.fit "$@"

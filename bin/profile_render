@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# profile_render -- counts Textual redraws (table rebuilds, age-cell patches, Static.update calls)
+# over a simulated 5-minute desk session. Sibling of `bin/profile_tick` / `bin/profile_marks`; see `pantheon/profile_render.py`. Measurement only -- this script changes nothing.
+#
+# Usage: bin/profile_render [label]
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+PY="$HERE/.venv/bin/python"
+export PATH="/usr/bin:$PATH" MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+
+if [ ! -x "$PY" ]; then
+  echo "profile_render: venv python not found at $PY" >&2
+  exit 1
+fi
+
+cd "$ROOT" || exit 1
+exec "$PY" -m pantheon.profile_render "${1:-run}"

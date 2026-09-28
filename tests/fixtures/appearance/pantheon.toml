@@ -1,0 +1,10 @@
+# Pantheon settings. Absolute paths only; `~` is never used.
+vault = "C:/fixtures/vault"
+projects_root = "C:/fixtures/Claude"
+
+[appearance]                # desktop parity; also Ctrl+P -> "theme" in the deck for a live preview
+theme = "pantheon"          # "pantheon" | "high-contrast" | "light"
+glyphs = "unicode"          # "unicode" | "ascii" (Android SSH clients vary)
+
+[standalone]
+folder = "C:/fixtures/pantheon-tasks"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# schedule -- start a Claude or Codex session at a set time.
+# Runs once and exits; Windows Task Scheduler does the waiting, one one-shot entry per start.
+#   bin/schedule <project> --at 06:00 [--who claude|codex-pc|codex-headless] [--model M]
+#                [--effort E] [--mode MODE] [--message TEXT] [--preset NAME] [--force]
+#   bin/schedule --list            what is waiting, and how the ones that ran went
+#   bin/schedule --cancel <id>     take one off
+# If 06:00 lands inside a usage window already past the governor's wind-down line, it says so
+# and schedules nothing unless --force is given.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="${PANTHEON_PY:-$ROOT/.venv/bin/python}"
+export PATH="/usr/bin:$PATH"   # the venv python needs the MSYS2 DLLs
+export MSYSTEM=MSYS
+cd "$ROOT" || exit 1
+exec "$PY" -m pantheon.schedule.cli "$@"

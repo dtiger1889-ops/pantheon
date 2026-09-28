@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# statusline_capture -- Claude Code's statusLine command, doing two jobs at once.
+#
+#   1. It saves the JSON Claude Code pipes in on stdin to state/statusline/<session_id>.json,
+#      which is the only place Pantheon can read the real 5-hour and weekly percentages from
+#.
+#   2. It prints one short line back, so Claude Code's own status bar still says something.
+#
+# Register it in <your ~/.claude>/settings.json:
+#   "statusLine": { "type": "command",
+#     "command": "<your pantheon checkout>/bin/statusline_capture" }
+#
+# Fail-open on purpose: anything at all going wrong prints "pantheon hud: no data" and exits 0,
+# because a broken status line must never break a Claude Code session.
+# PANTHEON_ROOT lets a branch be tried out from a git worktree before it is merged; the
+# default is the real project folder (this script's own checkout), which is what tmux and
+# Claude Code will always use.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+# The MSYS2 venv always lives at the real project root, even when ROOT points at a worktree.
+PY="$HERE/.venv/bin/python"
+export PATH="/usr/bin:/c/Program Files/nodejs:$PATH"   # /usr/bin: the venv python needs the MSYS2 DLLs, and Claude Code starts this bash from Windows without it; nodejs: npx shells out to bare `node`
+export MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+cd "$ROOT" 2>/dev/null || { echo "pantheon hud: no data"; exit 0; }
+
+if [ ! -x "$PY" ]; then
+  echo "pantheon hud: no data"
+  exit 0
+fi
+
+"$PY" -m pantheon.hud.capture 2>/dev/null || echo "pantheon hud: no data"
+exit 0

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# governor -- the session-limit governor loop. Runs in its
+# own tmux window ("gov"), started by bin/pantheon only when [governor] enabled = true in
+# pantheon.toml. Not a thread inside the deck: the user closes the deck, his agents keep running,
+# and the governor must not stop watching them (all of its memory lives in state/limits/, so a
+# restart picks up exactly where it left off).
+#   bin/governor            run the 60-second loop until Ctrl-C
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$ROOT/.venv/bin/python"
+export PATH="/usr/bin:/c/Program Files/nodejs:$PATH"   # /usr/bin: the venv python needs the MSYS2 DLLs; nodejs: npx shells out to bare `node`
+export MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+cd "$ROOT" || exit 1
+exec "$PY" -m pantheon.governor.runner

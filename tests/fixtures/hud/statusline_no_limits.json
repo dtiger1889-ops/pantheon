@@ -1,0 +1,21 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "9911aabb-ccdd-4eff-8877-665544332211",
+  "cwd": "C:/Home/x/Documents/Projects/habit_notes",
+  "model": {
+    "id": "claude-sonnet-5",
+    "display_name": "Sonnet 5"
+  },
+  "version": "2.0.0",
+  "cost": {
+    "total_cost_usd": 0.0417,
+    "total_duration_ms": 41200,
+    "total_lines_added": 3,
+    "total_lines_removed": 0
+  },
+  "context_window": {
+    "used_tokens": 18000,
+    "max_tokens": 200000,
+    "used_percentage": 9.0
+  }
+}

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# profile_tick -- one-tick performance profiler for the perf sweep. Prints a table of
+# milliseconds for the hot paths named there, at 100 / 1,000 / 10,000 synthetic event lines. Not a
+# test: it asserts nothing, it only measures, and it has no real tmux (headless Textual harness
+# only).
+#
+# Usage: bin/profile_tick [label]
+#   bin/profile_tick before      # run before a fix, label the output "before"
+#   bin/profile_tick after       # run after, so the two runs are easy to tell apart in a paste
+#
+# PANTHEON_ROOT lets this run against a branch/worktree's code (this file's own repo root by
+# default); the venv python always comes from the real project root, same as every other bin/
+# script, since the MSYS2 venv only exists there.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+PY="$HERE/.venv/bin/python"
+export PATH="/usr/bin:$PATH" MSYSTEM=MSYS   # the venv python needs the MSYS2 DLLs
+export PYTHONUNBUFFERED=1
+# No explicit PYTHONPATH: `cd "$ROOT"` before `-m` puts ROOT on sys.path[0], the same way
+# pytest's own `pythonpath = ["."]` resolves the `pantheon` package -- so this measures whichever
+# branch/worktree ROOT points at, using the one real venv.
+
+if [ ! -x "$PY" ]; then
+  echo "profile_tick: venv python not found at $PY" >&2
+  exit 1
+fi
+
+cd "$ROOT" || exit 1
+exec "$PY" -m pantheon.profile_tick "${1:-run}"

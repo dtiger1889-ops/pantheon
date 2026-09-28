@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# profile_marks -- isolates `pantheon.dispatch.marks.dispatch_marks` cost as marks and events
+# scale independently. Sibling of `bin/profile_tick`; see `pantheon/profile_marks.py` for what it measures.
+#
+# Usage: bin/profile_marks [label]
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+PY="$HERE/.venv/bin/python"
+export PATH="/usr/bin:$PATH" MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+
+if [ ! -x "$PY" ]; then
+  echo "profile_marks: venv python not found at $PY" >&2
+  exit 1
+fi
+
+cd "$ROOT" || exit 1
+exec "$PY" -m pantheon.profile_marks "${1:-run}"

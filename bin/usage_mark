@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# usage_mark -- append one reading of the plan percentages to state/limits/limits.jsonl.
+# The arithmetic and the file shape live in pantheon/hud/limits.py.
+#
+#   usage_mark start  --note "work the plate 2026-09-04"        # a batch begins
+#   usage_mark before --repo hiking_log_v2                       # one delegated row is about to run
+#   usage_mark after  --repo hiking_log_v2 --tokens 193277 --duration-ms 501107 --note "2 rows"
+#   usage_mark summary                                           # the batch line the BUDGET card shows
+#   usage_mark refit                                             # points per 100k tokens over every pair on file
+#   usage_mark before --provider codex --repo X                  # a Codex worker; reads Codex's own log
+#   usage_mark before --batch --note "5 workers"                # ONE reading for workers launched together;
+#                                                                #   each worker's after (any --repo) pairs against it
+#
+# Run it from a Claude Code session INSIDE the pantheon tmux: that session's statusline capture
+# (CLAUDE_CODE_SESSION_ID) is where the real 5-hour / weekly percentages come from. From a
+# Desktop-app session the row still lands, with the percentages null and the note saying why.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+PY="$HERE/.venv/bin/python"
+# /c/msys64/usr/bin by its absolute path: under the Git Bash tool, /usr/bin is Git's own usr/bin and the
+# venv python then cannot load msys-python3.12.dll.
+export PATH="/c/msys64/usr/bin:/usr/bin:$PATH" MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+cd "$ROOT" 2>/dev/null || { echo '{"error":"pantheon root not found"}'; exit 1; }
+if [ ! -x "$PY" ]; then
+  echo '{"error":"MSYS2 venv python not found"}'
+  exit 1
+fi
+exec "$PY" -m pantheon.hud.limits "$@"

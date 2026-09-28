@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# queue_counts -- print how many tasks are on each queue tab, plus the first few file names.
+# Put it beside the Sprints Base open in Obsidian: the numbers should match tab for tab.
+# Run from an MSYS2 shell.
+#   queue_counts            counts from the tab rules in the vault's Sprints.base
+#   queue_counts --spec     counts from the rules written into the specs (the cross-check)
+#   queue_counts --config /path/to/pantheon.toml
+#   queue_counts --base "<your vault>/Projects/OtherProject.base"
+#                            counts from any other Base file, before switching pantheon.toml to it
+#
+# The Python lives in the shared MSYS2 venv at the project root; this script may sit in a
+# working copy of the repo, so it finds its own folder rather than assuming one.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$HERE")"
+PY="$ROOT/.venv/bin/python"
+export PATH="/c/Program Files/nodejs:$PATH"
+export PYTHONUNBUFFERED=1
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+cd "$ROOT" || exit 1
+exec "$PY" -m pantheon.queue.counts "$@"

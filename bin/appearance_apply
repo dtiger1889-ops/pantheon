@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# appearance_apply -- scripted/tested appearance changes, no screen needed:
+#   bin/appearance_apply --preset high-contrast
+#   bin/appearance_apply --override chrome=#33E0FF
+#   bin/appearance_apply --reset-token chrome
+#   bin/appearance_apply --reset-all
+#   bin/appearance_apply --font-face "JetBrains Mono" --font-size 12 --cell-height 1.1 --cell-width 0.95
+# The font flags write Windows Terminal's settings.json for real (backup + surgical patch, same
+# safeguards as the screen's Apply button) -- never run against the real file in a test.
+PANTHEON_ROOT_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$PANTHEON_ROOT_DEFAULT}"
+PY="$PANTHEON_ROOT_DEFAULT/.venv/bin/python"
+export PATH="/usr/bin:$PATH" MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+cd "$ROOT" || exit 1
+
+if [ ! -x "$PY" ]; then
+  echo "could not find the MSYS2 venv python at $PY" >&2
+  exit 1
+fi
+
+exec "$PY" -m pantheon.appearance.apply "$@"

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# plan -- open the planning page in this terminal: pick queue rows with space and see what they
+# would cost of the 5-hour and weekly windows, with a range and the number of past rows behind it.
+# Read-only. Not yet wired into the deck: run it from a shell.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+PY="$HERE/.venv/bin/python"
+export PATH="/c/msys64/usr/bin:/usr/bin:$PATH" MSYSTEM=MSYS
+cd "$ROOT" 2>/dev/null || { echo "pantheon root not found"; exit 1; }
+if [ ! -x "$PY" ]; then
+  echo "MSYS2 venv python not found"
+  exit 1
+fi
+exec "$PY" -m pantheon.planning "$@"

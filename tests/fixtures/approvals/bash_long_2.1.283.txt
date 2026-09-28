@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Sonnet 5 with high effort · Claude Max
+ ▝▝   ▝▝   C:\msys64\tmp\pw\paprobe · /rc
+
+
+> Use the Bash tool to run exactly this command, nothing else, no explanation: echo pantheon-probe-1 > probe1.txt
+
+  Ran 1 shell command
+
+● Done.
+
+✻ Sautéed for 12s · done 10:52 PM
+
+> Use the Bash tool to run exactly this one command, verbatim, nothing else: cd /tmp/pw/paprobe && mkdir -p sub && echo
+  alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel-india-juliet-kilo-lima-mike-november > sub/long.txt && echo
+  oscar-papa-quebec-romeo-sierra-tango-uniform-victor-whiskey-xray-yankee-zulu >> sub/long.txt
+
+● Creating sub directory and writing two lines to sub/long.txt
+  ⎿  $ cd /tmp/pw/paprobe && mkdir -p sub && echo
+     alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel-india-juliet-kilo-lima-mike-november > sub/long.txt && echo
+     oscar-papa-quebec-romeo-sierra-tango-uniform-victor-whiskey-xray-yankee-zulu >> sub/long.txt
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+
+   │ cd /tmp/pw/paprobe && mkdir -p sub && echo
+   │ alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel-india-juliet-kilo-lima-mike-november > sub/long.txt && echo
+   │ oscar-papa-quebec-romeo-sierra-tango-uniform-victor-whiskey-xray-yankee-zulu >> sub/long.txt
+   Create sub directory and write two lines to sub/long.txt
+
+ │ Compound command contains cd with write operation - manual approval required to prevent path resolution bypass
+
+ Do you want to proceed?
+ > 1. Yes
+   2. Yes, and don’t ask again for: cd *
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend

@@ -1,0 +1,46 @@
+{
+  "claude": {
+    "burn_cost_per_hour": 20.645116493210462,
+    "burn_pct_per_hour": 8.4,
+    "context_pct": 37.0,
+    "cost_today_usd": 77.1522,
+    "fetched_at": "2026-09-01T23:50:00.000Z",
+    "five_hour_pct": 42.0,
+    "five_hour_resets_at": "2026-09-02T01:00:00.000Z",
+    "note": "",
+    "provider": "claude",
+    "seven_day_pct": 61.0,
+    "seven_day_resets_at": "2026-09-07T12:42:43Z",
+    "source": "statusline",
+    "tokens_today": 116200874
+  },
+  "codex": {
+    "burn_cost_per_hour": null,
+    "burn_pct_per_hour": null,
+    "context_pct": null,
+    "cost_today_usd": 13.6495244,
+    "fetched_at": "2026-09-01T23:50:00.000Z",
+    "five_hour_pct": 81.0,
+    "five_hour_resets_at": "2026-09-01T20:31:13Z",
+    "note": "",
+    "provider": "codex",
+    "seven_day_pct": 29.0,
+    "seven_day_resets_at": "2026-09-07T12:42:43Z",
+    "source": "codex-log",
+    "tokens_today": 22018758
+  },
+  "fetched_at": "2026-09-01T23:50:00.000Z",
+  "history": {
+    "claude_pct": [30.0, 32.0, 35.0, 37.0, 38.0, 40.0, 41.0, 42.0],
+    "claude_samples": [
+      ["2026-09-01T23:15:00.000Z", 30.0],
+      ["2026-09-01T23:20:00.000Z", 32.0],
+      ["2026-09-01T23:25:00.000Z", 35.0],
+      ["2026-09-01T23:30:00.000Z", 37.0],
+      ["2026-09-01T23:35:00.000Z", 38.0],
+      ["2026-09-01T23:40:00.000Z", 40.0],
+      ["2026-09-01T23:45:00.000Z", 41.0],
+      ["2026-09-01T23:50:00.000Z", 42.0]
+    ]
+  }
+}

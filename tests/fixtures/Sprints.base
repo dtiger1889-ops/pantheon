@@ -1,0 +1,248 @@
+formulas:
+  age: if(created, created.relative())
+properties:
+  summary:
+    displayName: Summary
+  project:
+    displayName: Project
+  project_assignment_log:
+    displayName: Assignment ledger
+  complexity:
+    displayName: Effort
+  tier:
+    displayName: Tier
+  est_context:
+    displayName: Context to proceed
+  status:
+    displayName: Status
+  agent:
+    displayName: Agent
+  due:
+    displayName: Due
+  source:
+    displayName: Source
+  created:
+    displayName: Added
+  formula.age:
+    displayName: Age
+  note:
+    displayName: Note to Claude
+  reply:
+    displayName: Claude reply
+  next:
+    displayName: Now
+  done:
+    displayName: Done
+  picked:
+    displayName: Picked
+views:
+  - type: table
+    name: Now
+    filters:
+      and:
+        - file.inFolder("Projects/Sprints")
+        - done != true
+        - status != "done"
+        - next == true
+    order:
+      - file.name
+      - summary
+      - reply
+      - done
+    sort:
+      - property: picked
+        direction: ASC
+    columnSize:
+      file.name: 240
+      note.summary: 360
+      note.reply: 380
+  - type: table
+    name: Quick wins
+    filters:
+      and:
+        - file.inFolder("Projects/Sprints")
+        - done != true
+        - status != "done"
+        - agent != true
+        - complexity == "quick"
+        - status != "blocked"
+        - next != true
+        - tier != "someday"
+    order:
+      - file.name
+      - summary
+      - formula.age
+      - done
+      - reply
+    sort:
+      - property: created
+        direction: ASC
+    columnSize:
+      file.name: 240
+      note.summary: 360
+      note.reply: 320
+  - type: table
+    name: Decide
+    filters:
+      and:
+        - file.inFolder("Projects/Sprints")
+        - done != true
+        - status != "done"
+        - agent != true
+        - status == "blocked"
+        - tier != "someday"
+    order:
+      - file.name
+      - summary
+      - reply
+      - formula.age
+      - done
+    sort:
+      - property: created
+        direction: ASC
+    columnSize:
+      file.name: 240
+      note.summary: 360
+      note.reply: 420
+  - type: table
+    name: My queue
+    filters:
+      and:
+        - file.inFolder("Projects/Sprints")
+        - done != true
+        - status != "done"
+        - agent != true
+        - tier != "someday"
+    groupBy:
+      property: status
+      direction: DESC
+    order:
+      - file.name
+      - summary
+      - done
+      - tier
+      - project
+      - complexity
+      - formula.age
+      - due
+      - note.note
+      - reply
+    sort:
+      - property: project
+        direction: ASC
+    columnSize:
+      file.name: 280
+      note.summary: 360
+  - type: table
+    name: Agent's plate
+    filters:
+      and:
+        - file.inFolder("Projects/Sprints")
+        - done != true
+        - status != "done"
+        - agent == true
+    groupBy:
+      property: est_context
+      direction: DESC
+    order:
+      - file.name
+      - summary
+      - done
+      - project
+      - tier
+      - complexity
+      - status
+      - formula.age
+      - note.note
+      - reply
+    sort:
+      - property: tier
+        direction: DESC
+      - property: created
+        direction: ASC
+    columnSize:
+      file.name: 280
+      note.summary: 360
+  - type: table
+    name: Someday
+    filters:
+      and:
+        - file.inFolder("Projects/Sprints")
+        - done != true
+        - status != "done"
+        - tier == "someday"
+    order:
+      - file.name
+      - summary
+      - agent
+      - formula.age
+      - reply
+      - done
+    sort:
+      - property: agent
+        direction: ASC
+      - property: created
+        direction: ASC
+    columnSize:
+      file.name: 260
+      note.summary: 360
+      note.reply: 320
+  - type: table
+    name: Notes
+    filters:
+      and:
+        - file.inFolder("Projects/Sprints")
+        - done != true
+        - status != "done"
+    order:
+      - file.name
+      - done
+      - note.note
+      - reply
+      - summary
+      - project
+      - status
+      - project_assignment_log
+    sort:
+      - property: note.note
+        direction: DESC
+      - property: project
+        direction: ASC
+    columnSize:
+      file.name: 260
+      note.note: 320
+      note.reply: 320
+      note.project_assignment_log: 460
+  - type: table
+    name: By project
+    filters:
+      and:
+        - file.inFolder("Projects/Sprints")
+        - done != true
+        - status != "done"
+    groupBy:
+      property: project
+      direction: ASC
+    order:
+      - file.name
+      - summary
+      - done
+      - tier
+      - complexity
+      - status
+      - agent
+      - est_context
+      - due
+      - source
+      - note.note
+      - reply
+      - project_assignment_log
+    sort:
+      - property: project
+        direction: DESC
+      - property: complexity
+        direction: DESC
+    columnSize:
+      file.name: 280
+      note.summary: 360
+      note.project_assignment_log: 460

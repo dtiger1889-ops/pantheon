@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# notifier -- the notify loop. Runs in the "gov" tmux window
+# beside the governor (bin/pantheon starts it there only when [notify] enabled = true in
+# pantheon.toml). Standalone process, not a thread inside the deck, for the same reason the
+# governor is standalone: the user closes the deck, his agents keep running, and this must keep
+# watching them (all of its memory lives in state/notify/, so a restart picks up exactly where
+# it left off).
+#   bin/notifier            run the 2-second loop until Ctrl-C
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$ROOT/.venv/bin/python"
+export PATH="/usr/bin:/c/Program Files/nodejs:$PATH"   # /usr/bin: the venv python needs the MSYS2 DLLs; nodejs: npx shells out to bare `node`
+export MSYSTEM=MSYS
+export PYTHONUNBUFFERED=1
+cd "$ROOT" || exit 1
+exec "$PY" -m pantheon.notify.runner

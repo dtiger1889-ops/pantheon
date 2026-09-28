@@ -1,0 +1,39 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "0f2b7c1e-4a3d-4f8b-9c11-abcdef012345",
+  "transcript_path": "C:/Home/x/.claude/projects/example/0f2b7c1e.jsonl",
+  "cwd": "C:/Home/x/Documents/Projects/project_lanterns",
+  "model": {
+    "id": "claude-opus-5",
+    "display_name": "Opus 5"
+  },
+  "workspace": {
+    "current_dir": "C:/Home/x/Documents/Projects/project_lanterns",
+    "project_dir": "C:/Home/x/Documents/Projects/project_lanterns"
+  },
+  "version": "2.0.0",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 1.2034,
+    "total_duration_ms": 812340,
+    "total_lines_added": 412,
+    "total_lines_removed": 37
+  },
+  "context_window": {
+    "used_tokens": 74000,
+    "max_tokens": 200000,
+    "used_percentage": 37.0
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 42.0,
+      "resets_at": 1788307200
+    },
+    "seven_day": {
+      "used_percentage": 61.0,
+      "resets_at": 1788804163
+    }
+  }
+}

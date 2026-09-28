@@ -1,0 +1,33 @@
+# Pantheon's own tab list for this folder. Each tab is
+# {name, key, filters, sort, groupBy} -- the same shape gh-dash uses for its own tabs -- read by
+# pantheon/tasks/basefilter.py, the identical filter language the Obsidian Base source reads.
+# Edit freely: add or remove tabs, reuse keys 1-9, change any filter. Obsidian never reads this
+# file.
+tabs:
+  - name: Now
+    key: "1"
+    filters: { and: ["done != true", "status != \"done\"", "next == true"] }
+    sort: [{ property: picked, direction: ASC }]
+  - name: Decide
+    key: "2"
+    filters: { and: ["done != true", "status != \"done\"", "agent != true", "status == \"blocked\"", "tier != \"someday\""] }
+    sort: [{ property: created, direction: ASC }]
+  - name: Quick wins
+    key: "3"
+    filters: { and: ["done != true", "status != \"done\"", "agent != true", "complexity == \"quick\"", "status != \"blocked\"", "next != true", "tier != \"someday\""] }
+    sort: [{ property: created, direction: ASC }]
+  - name: Agent's plate
+    key: "4"
+    filters: { and: ["done != true", "status != \"done\"", "agent == true"] }
+    groupBy: { property: est_context, direction: DESC }
+  - name: Someday
+    key: "5"
+    filters: { and: ["done != true", "status != \"done\"", "tier == \"someday\""] }
+    sort: [{ property: agent, direction: ASC }]
+  - name: Notes
+    key: "6"
+    filters: { and: ["done != true", "status != \"done\""] }
+  - name: By project
+    key: "7"
+    filters: { and: ["done != true", "status != \"done\""] }
+    groupBy: { property: project, direction: ASC }

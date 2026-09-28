@@ -1,0 +1,40 @@
+# pantheon .gitignore
+
+# ---- Editor / OS noise ----
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# ---- Common landmines ----
+node_modules/
+*.log
+.env
+.env.*
+
+# ---- Claude Code / Codex managed worktrees + agent state ----
+.claude/worktrees/
+.claude/settings.local.json
+
+# ---- Runtime state the deck writes (never history) ----
+state/
+*.sqlite
+*.db
+
+# ---- Machine-specific real settings: the real vault/projects/tool
+# paths live here, never in git. pantheon.example.toml (tracked) is the placeholder template;
+# pantheon/wizard.py writes this file on first run.
+/pantheon.toml
+snapshot_report.html

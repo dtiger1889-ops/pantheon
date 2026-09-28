@@ -1,0 +1,128 @@
+# Pantheon settings TEMPLATE. Copy this to `pantheon.toml` at the project root and fill in the
+# REQUIRED values below -- or just run `bin/pantheon` once with no `pantheon.toml` present: the
+# first-run wizard asks for `vault`, `projects_root` and `tmux_session`
+# and writes a real file for you. It does NOT ask about `claude_home`, `codex_home`, or anything
+# under `[tools]` -- those need a hand-edit here if the Windows defaults in pantheon/config.py
+# don't already match your machine.
+#
+# `pantheon.toml` itself is gitignored: it holds real, machine-specific
+# paths and is never committed. This example file is the only copy that ships in the repo.
+#
+# Absolute paths only; `~` is never used -- Windows paths use
+# forward slashes, same as everywhere else in this project.
+
+vault = "C:/Users/<you>/Documents/Obsidian Vault"          # REQUIRED: your Obsidian vault folder
+projects_root = "C:/Users/<you>/Documents/Projects"          # REQUIRED: where your project folders live
+claude_home = "C:/Users/<you>/.claude"                     # REQUIRED: usually ~/.claude for your account
+codex_home = "C:/Users/<you>/.codex"                       # REQUIRED: usually ~/.codex for your account
+tmux_session = "pantheon"
+refresh_seconds = 5
+ccusage_version = "latest"  # pin once it works, e.g. "20.0.20" -- avoids re-checking the registry every call
+default_provider = "claude"
+max_agents = 4              # dispatch refuses a 5th concurrent agent
+task_source = "obsidian_base"  # "obsidian_base" | "standalone"; stays on Obsidian for now
+base_file = "Projects/Sprints.base"  # any .base under `vault`; sprints_folder below is derived
+                                     # from ITS OWN file.inFolder(...) filter when left unset
+# sprints_folder = "Projects/Sprints"  # only needed if a Base has no file.inFolder filter to derive from
+# pinned_projects = ["C:/Users/<you>/Documents/Projects/Apps/my-app"]  # always listed in the `n` picker
+
+[providers]
+claude = true
+codex = true
+
+[governor]                  # session-limit governor
+enabled = false
+dry_run = true
+grace_seconds = 300         # how long a session gets to finish /checkpoint before it counts as parked
+auto_resume = true          # false = park and stop; restart the deck by hand
+max_parked = 6              # refuse to park more than this; warn instead (never kill)
+resume_prompt = "Limit reset. Re-orient from CHECKPOINT.md, then continue where you stopped."
+
+[governor.wind_down_at_percent]
+five_hour = 85
+seven_day = 90
+
+[notify]                    # notifications
+enabled = false              # ships OFF -- turn on after reading a day of dry-run sent.jsonl
+dry_run = true                # write state/notify/sent.jsonl, send nothing
+needs_you_after_seconds = 60
+nudge_minutes = 15
+max_nudges = 2
+present_seconds = 120
+quiet_hours = ["23:00", "08:00"]
+
+[notify.toast]
+enabled = true               # desk only; needs a Windows session (skipped silently over pure SSH)
+
+[notify.ntfy]
+enabled = false
+url = ""                      # the Tailscale (or other) address of your self-hosted ntfy; empty = off
+topic = "pantheon"
+
+[notify.telegram]
+enabled = false
+chat_id = ""                  # your notifier's chat id
+credential_target = ""        # Windows Credential Manager target name for the bot token; never the token itself
+
+[appearance]                # desktop parity; also Ctrl+P -> "theme" in the deck for a live preview
+theme = "pantheon"          # "pantheon" | "high-contrast" | "light"
+glyphs = "unicode"          # "unicode" | "ascii" (Android SSH clients vary)
+
+[standalone]                 # the folder `pantheon new` writes into and, if task_source above
+                            # is switched to "standalone", where the queue's rows and tabs come
+                            # from instead of Obsidian. Not in use while task_source stays "obsidian_base".
+folder = "C:/Users/<you>/Documents/pantheon-tasks"          # REQUIRED if task_source = "standalone"
+
+[new_session]                # what the `n` picker preselects
+                            # for model/effort on a fresh session. "default" leaves the field alone
+                            # (the CLI's own default); anything else is applied right after launch.
+model = "default"            # e.g. "fable", "opus", "claude-opus-5-5" -- see pane.py MODEL_CHOICES
+effort = "high"               # "default" | "low" | "medium" | "high" | "xhigh" | "max"
+
+[keys]                       # the one prefix-less key that jumps back to the deck from
+                            # inside any agent window. Change this if F12 does not transmit
+                            # cleanly from your terminal -- needs `pantheon --restart`.
+back_to_deck = "F12"
+
+# [editor]                   # the text editor `e` opens beside the SESSIONS list. Leave it out
+#                            # and Pantheon uses micro if installed, else nano, else $EDITOR.
+# command = "micro"          # any terminal editor on the PATH, with its own flags if you want them:
+#                            # "nano", "nvim", "hx", "micro -softwrap true"
+
+[usage]                      # where the BUDGET card's Claude numbers may come from
+account_read = true          # also read your account's own usage from Anthropic. false = off.
+prompt_line = true           # one usage line in Claude's context before each prompt, once
+                             # hooks/usage_line.py is registered; env PANTHEON_USAGE_LINE=0 beats it
+
+[assistant]                  # the pinned Assistant: one always-on Claude session, one
+                             # long conversation, a line at the top of SESSIONS (A). Dispatch
+                             # without the Desktop app.
+enabled = true               # false = no Assistant window and no sidebar line
+folder = ""                  # where it works; "" = projects_root (the workspace folder)
+model = "claude-opus-5-5"     # passed as --model at every start/resume; "" = Claude's default
+effort = "medium"            # passed as --effort (low, medium, high, xhigh, max); "" = default
+                             #
+name = "Pantheon Assistant"  # the name a NEW Assistant conversation gets (--name); never renames
+
+[sessions]                   # the SESSIONS sidebar
+# Conversations whose folder is one of these (or inside one) never show in the finished list and
+# never make a project heading: throwaway trials, test servers, probe folders. Only hidden --
+# their transcripts are left alone. %NAME% expands from the environment. [] = hide nothing.
+hide_folders = ["C:/msys64/tmp", "/tmp", "%LOCALAPPDATA%/Temp", "C:/Windows/Temp"]
+
+[tools]
+ccusage = ""  # "" = via npx; point this at a local install once one exists
+wt = "C:/Users/<you>/AppData/Local/Microsoft/WindowsApps/wt.exe"    # REQUIRED: Windows Terminal, per-user Store install path
+codex = "C:/Users/<you>/.local/bin/codex"                          # REQUIRED: the Codex CLI shim
+python = "C:/Users/<you>/path/to/pantheon/.venv/bin/python"  # REQUIRED: the MSYS2 venv python, runs the Codex job wrapper
+
+# Workflow presets: a named bundle of launch choices, used by
+#   pantheon open [<project>] --preset <name>      and      bin/schedule [<project>] --at HH:MM --preset <name>
+# A flag typed on the command line always beats the preset. Copy the block, drop the leading #s, rename it.
+# [presets.example]
+# project = "hiking_log_v2"   # optional; leave it out and name the folder on the command line
+# who = "claude"              # claude | codex-pc | codex-headless
+# model = "sonnet"
+# effort = "high"
+# mode = "acceptEdits"        # Claude permission mode, or the Codex sandbox
+# message = "Re-orient from CHECKPOINT.md in {project}, then carry on."   # {project} = the folder's name
