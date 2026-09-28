@@ -1,6 +1,6 @@
 # Pantheon
 
-A terminal command deck for running several coding agents at once. It shows every Claude Code and Codex session, who is waiting on you, how much of your usage window is left, and your task list, on one screen inside tmux.
+A terminal command deck for running several coding agents at once, from your desk or your phone. It shows every Claude Code and Codex session, who is waiting on you, how much of your usage window is left, and your task list, on one screen inside tmux.
 
 ![Pantheon desk view, drawn from invented sample data](assets/deck.svg)
 
@@ -15,7 +15,14 @@ When I run several agents in parallel on a subscription plan, the hard part is k
 - **Queue**: your task list read straight from an Obsidian vault (task notes plus a `.base` file for the tabs), or from a plain Markdown folder. Pick a task and launch an agent on it with a briefing built from the note.
 - **Budget**: 5-hour and weekly usage, burn rate, time to the limit and cost per day, built from local logs and Claude Code's status line. No reverse-engineered API calls.
 - **Assistant**: an always-on session pinned in its own window, reachable from your phone through Claude's Remote Control.
-- Works on a desktop monitor and, in a narrower layout, from a phone over SSH.
+
+## From your phone
+
+Pantheon lives in tmux, so any SSH app on your phone (Termius, Blink, JuiceSSH) that reaches your PC, directly or over Tailscale, opens the same deck you left on your desk. It switches to a narrow layout that fits a phone screen, and there's no extra app, account or relay server to set up.
+
+This is where it earns its keep for me. Starting agent work from a phone terminal usually means remembering or pasting a long `cd` plus `claude --model ... --effort ...` line on a phone keyboard. In Pantheon you press `n`, pick the project from a list, choose the model, effort and permission mode, type the first message, and it launches in its own tmux window. You can also start an agent on a task straight from your queue, answer a session that's waiting on you, or jump into any running session to take over.
+
+<img src="assets/phone.svg" alt="Pantheon's phone layout, drawn from invented sample data" width="420">
 
 ## Requirements
 
@@ -38,6 +45,33 @@ python -m venv --copies .venv
 ## Configure
 
 Run `bin/pantheon` once and a first-run wizard asks for your vault folder, projects folder and tmux session name, then writes `pantheon.toml`. Every other setting is documented in `pantheon.example.toml`.
+
+### Vault setup
+
+`vault-template/` holds everything the queue needs in your Obsidian vault:
+
+- `Projects/Sprints.base`: a Base with ten views for Obsidian itself. Pantheon's queue shows seven of them as tabs: Now, Decide, Quick wins, Agent's plate, Someday, Notes and By project.
+- `Templates/Task.md`: a task note with every field the queue reads. Set it as your Templates folder's new-task template and save tasks to `Projects/Sprints/`.
+
+The fields that drive the tabs:
+
+| Field | Values | What it does |
+|---|---|---|
+| `summary` | text | The row's title |
+| `project` | folder name | Groups By project; a launched agent starts in that folder under your projects root |
+| `tier` | `now`, `soon`, `someday` | `someday` parks a row on Someday and keeps it off Decide and Quick wins |
+| `status` | `open`, `in-progress`, `blocked`, `verify`, `done` | `blocked` rows go to Decide; `done` hides the row |
+| `complexity` | `quick`, `moderate`, `heavy` | `quick` rows go to Quick wins |
+| `agent` | `true`, `false` | `true` puts the row on Agent's plate |
+| `est_context` | `small`, `medium`, `large` | Groups Agent's plate by how much work a session needs |
+| `next` | `true` or empty | Pins the row to Now |
+| `daytime` | `true`, `false` | Splits the Base's After hours and Business hours views (Obsidian only) |
+| `done` | `true`, `false` | `true` hides the row everywhere |
+| `note`, `reply` | text | A two-way message lane between you and the agent working the row |
+
+If your vault uses a different folder, point `base_file` in `pantheon.toml` at your `.base`. No Obsidian? Set `task_source = "standalone"` and Pantheon reads a plain Markdown folder instead.
+
+### Hooks
 
 To feed THE PIT and the Budget card, register these in `~/.claude/settings.json` (each file's header shows how):
 

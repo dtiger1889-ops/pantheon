@@ -15,7 +15,7 @@ from typing import Callable, Iterable
 from ..models import TaskRow
 
 # The order the tabs appear on screen and the number key that jumps to each one.
-# Taken from  (Now, Decide) and  (the rest), and matched by `bin/pantheon --keys`.
+# Tab names and filters match vault-template/Projects/Sprints.base, and `bin/pantheon --keys`.
 TAB_ORDER = ["Now", "Decide", "Quick wins", "Agent's plate", "Someday", "Notes", "By project"]
 
 # Group headings for the Agent's-plate tab, in the order the spec asks for.
