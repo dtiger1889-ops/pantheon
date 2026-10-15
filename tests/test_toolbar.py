@@ -75,12 +75,12 @@ async def test_a_disabled_button_still_shows_but_does_not_dispatch():
     app = _Harness()
     async with app.run_test() as pilot:
         disabled = [Action("h", "Hand to Codex…", "hand_off", "error", enabled=False,
-                           tooltip="waiting for the governor (S8)")]
+                           tooltip="waiting for the governor")]
         app.bar.set_actions(disabled)
         await pilot.pause()
         btn = app.query_one("Button#act-hand_off", Button)
         assert btn.disabled is True
-        assert btn.tooltip == "waiting for the governor (S8)"
+        assert btn.tooltip == "waiting for the governor"
         await pilot.click("Button#act-hand_off")
         await pilot.pause()
     assert app.calls == []

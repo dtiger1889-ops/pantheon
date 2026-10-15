@@ -153,10 +153,10 @@ async def test_path_a_new_claude_with_choices_starts_with_them_as_flags(tmp_path
 
 @drives_the_screen
 async def test_path_b_stock_config_picks_up_the_new_session_effort_default(tmp_path, monkeypatch):
-    """`make_cfg` builds a plain `config_mod.Config`, whose `[new_session]` defaults are model
-    "default" (untouched) and effort "high" -- pressing
-    straight Enter through model/effort/mode now starts with only `--effort high`, never "default -> Sonnet
-    5 / low" silently."""
+    """`make_cfg` builds a plain `config_mod.Config()`, whose `[new_session]` defaults are Opus 5.5
+    with the 1M window at medium effort. The `default` line starts highlighted
+    on both screens and says what it is; pressing straight Enter through model/effort/mode starts
+    with exactly those as start flags, whatever Claude Code's own saved default is."""
     cfg, root = make_cfg(tmp_path)
     app, claude, codex, typed = await start_deck(cfg, monkeypatch)
     async with app.run_test(size=(200, 50)) as pilot:
@@ -165,15 +165,18 @@ async def test_path_b_stock_config_picks_up_the_new_session_effort_default(tmp_p
         await pilot.press("n"); await pilot.pause()
         await pick_project(pilot, app, "loom")
         await pilot.press("c"); await pilot.pause()
-        assert app.screen.current == "default"                             # model default untouched
+        assert app.screen.current == "default"                             # `default` highlighted
+        assert "Opus 5.5 · 1M-token context" in next(o.detail for o in app.screen.options if o.value == "default")
         await pilot.press("enter"); await pilot.pause()   # model default
-        assert app.screen.current == "high"                                # effort preselected from config
-        await pilot.press("enter"); await pilot.pause()   # effort default (= "high")
+        assert app.screen.current == "default"
+        assert next(o.detail for o in app.screen.options if o.value == "default") == "medium"
+        await pilot.press("enter"); await pilot.pause()   # effort default (= "medium")
         await pilot.press("enter"); await pilot.pause()   # mode default
         assert isinstance(app.screen, TextPrompt)
         await pilot.press("enter")
         await wait_launch(app, claude, pilot)
-    assert claude.calls[0]["options"] == {"start_effort": "high"} and claude.calls[0]["briefing"] == ""
+    assert claude.calls[0]["options"] == {"start_model": "claude-opus-5-5[1m]", "start_effort": "medium"}
+    assert claude.calls[0]["briefing"] == ""
     assert typed.calls == []
 
 

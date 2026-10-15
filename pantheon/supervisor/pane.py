@@ -33,6 +33,7 @@ from textual.widgets import DataTable, Static
 from .. import assistant as assistant_mod
 from .. import config as config_mod
 from .. import connectors as connectors_mod
+from ..keepalive import KeepAlive
 from .. import dialogs as dialogs_mod
 from .. import events as events_mod
 from .. import eventcache as eventcache_mod
@@ -42,6 +43,7 @@ from .. import model_picker
 from .. import session_ctl
 from .. import theme as theme_mod
 from .. import tmuxctl
+from .. import tmuxfeed
 from .. import transcripts as transcripts_mod
 from ..governor import handoff as handoff_mod
 from ..hud import sources as hud_sources
@@ -187,6 +189,10 @@ ACTION_DEFS: dict[str, Action] = {
     "hand_codex": Action("h", "Hand to Codex…", "hand_off", "error"),
     "hand_claude": Action("h", "Hand to Claude…", "hand_off", "error"),
     "log": Action("l", "Log", "log"),
+    # A gone Claude row: reopen the same conversation in a new window (`claude --resume <id>`),
+    # the same path a click on a finished session in SESSIONS takes. Labelled "Restart killed"
+    # when `k` closed it.
+    "restart": Action("s", "↻ Restart", "restart_session", "primary"),
     # Not a row action: the standing "New session" button, first on the bar
     # whether or not a row is selected.
     "new": Action("n", "New session…", "new_session", "primary"),
@@ -235,8 +241,10 @@ ROW_ACTIONS: dict[AgentStatus, list[str]] = {
     AgentStatus.PARKED: ["hand_codex", "copy_id"],
     AgentStatus.RESUME_FAILED: ["hand_codex", "folder", "copy_id"],
     AgentStatus.DONE: ["log", "hand_claude"],
-    AgentStatus.GONE: ["copy_id", "hand_codex"],
+    AgentStatus.GONE: ["restart", "copy_id", "hand_codex"],
 }
+RESTART_KILLED_LABEL = "↻ Restart killed"
+KILLED_ACTION = "killed from the deck"   # `state._fold_pantheon`'s words for a `kill` line
 
 # Every key the toolbar can ever show, regardless of row -- the pane's BINDINGS must offer exactly
 # this set (S-UI acceptance 3, `tests/test_ui_controls.py`).
@@ -401,7 +409,11 @@ def toolbar_actions_for(row: AgentState, available_providers: Optional[set] = No
         #.
         if name in ("jump", "answer", "kill") and row.window_index is None:
             continue
+        if name == "restart" and (row.provider or "claude") != "claude":
+            continue   # a finished Codex conversation cannot be reopened here (CODEX_NO_RESUME)
         base = ACTION_DEFS[name]
+        if name == "restart" and row.last_action == KILLED_ACTION:
+            base = Action(base.key, RESTART_KILLED_LABEL, base.action_name, base.variant)
         enabled, tooltip = True, None
         if name in ("allow", "deny"):
             enabled = row.window_index is not None
@@ -417,6 +429,11 @@ def toolbar_actions_for(row: AgentState, available_providers: Optional[set] = No
                 tooltip = "'claude' is not switched on in pantheon.toml"
         elif name == "folder":
             enabled = bool(row.cwd)
+        elif name == "restart":
+            enabled = bool(row.cwd) and "claude" in available
+            if not enabled:
+                tooltip = ("no folder is recorded for it" if not row.cwd
+                           else "'claude' is not switched on in pantheon.toml")
         elif name in ("hand_codex", "hand_claude"):
             to_provider = "codex" if name == "hand_codex" else "claude"
             enabled = to_provider in available
@@ -449,7 +466,7 @@ def _clip_one_line(text: str, width: int) -> str:
     return flat[: width - 1] + "…" if len(flat) > width else flat
 
 
-class SupervisorPane(Widget):
+class SupervisorPane(KeepAlive, Widget):
     """The agents list, header line, key overlay and footer sentence, as one reusable widget."""
 
     class SessionStarted(Message):
@@ -499,6 +516,7 @@ class SupervisorPane(Widget):
         Binding("v", "view_request", "see all of it", show=False),
         Binding("h", "hand_off", "hand off", show=False),
         Binding("H", "handoff", "hand off here", show=False),
+        Binding("s", "restart_session", "restart", show=False),
         # `priority=True`: `DataTable` binds its OWN `enter` (to `select_cursor`) on itself, the
         # focused widget, which would otherwise win over this pane-level binding every time.
         Binding("enter", "open_actions", "actions", priority=True),
@@ -516,8 +534,11 @@ class SupervisorPane(Widget):
         # The default goes through the short-lived cache (perf sweep item 2): the supervisor and
         # queue panes, both polling "every window in every session" on their own ~5s timers a
         # fraction of a second apart, now usually share one subprocess spawn instead of two.
-        self._window_source = window_source or (lambda: tmuxctl.list_windows_cached(None))
-        # `appearance_settings.glyphs`: `[appearance] glyphs` wins when set, else the old
+        # Since 2026-10-08 the tmux feed (`pantheon/tmuxfeed.py`) answers first, so the drawing
+        # thread spawns nothing while the feed is fresh.
+        self._window_source = window_source or (lambda: tmuxfeed.windows_or_live(
+            self.cfg, lambda: tmuxctl.list_windows_cached(None)))
+        # `appearance_settings().glyphs`: `[appearance] glyphs` wins when set, else the old
         # top-level `glyphs` key still works. `icon_table` layers Nerd Font glyphs from
         # `[appearance] icons` on top -- `state_cell` still prints the word beside
         # whichever glyph comes back, so `icons = false` (the default) renders exactly as before.
@@ -551,11 +572,11 @@ class SupervisorPane(Widget):
         self._detail_visible = False     # D/W widths only
         # Startup questions (folder trust, a new MCP server) read off agent screens each tick;
         # `_row_dialogs` is session_id -> (tmux target, Dialog) for the rows showing one now.
-        self._dialog_scanner = dialogs_mod.Scanner()
+        self._dialog_scanner = dialogs_mod.Scanner(capture=tmuxfeed.capture_or_live(self.cfg))
         self._row_dialogs: dict = {}
         # Permission prompts: session_id -> what the row is asking, read
         # from the event log and the window's own screen each tick (`supervisor/approvals.py`).
-        self.approvals = approvals_mod.Approvals()
+        self.approvals = approvals_mod.Approvals(scan_capture=tmuxfeed.capture_or_live(self.cfg))
         self._ascii = (appearance.glyphs or "").lower() == "ascii"
         # session_id -> (monotonic deadline, UTC time `/checkpoint` was typed) for
         # each `H` hand-off still waiting on its old session; a second `H` never types it twice.
@@ -787,7 +808,9 @@ class SupervisorPane(Widget):
             return [self._phone_cell(row, now)]
         values = {
             "state": state_cell(row, self.glyphs),
-            "project": row.project or "-",
+            # The Assistant's folder is wherever it last worked, so it read as a second project
+            # session.
+            "project": "Assistant" if row.session_id in self._assistant_ids else (row.project or "-"),
             "where": "no window" if row.where == "desktop" else row.where,
             "action": row.last_action or "-",
             "age": format_age(row.age_seconds(now)),
@@ -1009,7 +1032,10 @@ class SupervisorPane(Widget):
         detail.update(self._detail_body(row))
 
     def _detail_title(self, row: AgentState) -> str:
-        name = row.project or (row.session_id[:8] if row.session_id else "agent")
+        if row.session_id in self._assistant_ids:
+            name = "Assistant"
+        else:
+            name = row.project or (row.session_id[:8] if row.session_id else "agent")
         if row.window_index is not None:
             where = f"window {row.window_index}"
         elif row.provider == "codex" and row.job_id:
@@ -1343,15 +1369,18 @@ class SupervisorPane(Widget):
         elif step == "model":
             # Family first, then version, recent first (`pantheon/model_picker.py`, the same two
             # screens the row action `m` opens). Escape on the family screen = back one step.
-            default_model = "default" if codex else self.cfg.new_session_settings().model
+            # `default` starts highlighted and says what it is.
             model_picker.open_picker(self.app, "codex" if codex else "claude", f"model for {name}",
-                                     ns.get("model", default_model),
-                                     functools.partial(self._ns_got, "model"), cfg=self.cfg)
+                                     ns.get("model", "default"),
+                                     functools.partial(self._ns_got, "model"), cfg=self.cfg,
+                                     default_detail=None if codex else self._new_session_default_words("model"))
         elif step == "effort":
             choices = CODEX_EFFORT_CHOICES if codex else EFFORT_CHOICES
             options = [PickOption(k, v, v, d) for k, v, d in choices]
-            default_effort = "default" if codex else self.cfg.new_session_settings().effort
-            self.app.push_screen(Pick(f"effort for {name}  (Esc = back)", options, current=ns.get("effort", default_effort)),
+            if not codex:
+                options = [PickOption(o.key, o.value, o.label, self._new_session_default_words("effort"))
+                           if o.value == "default" else o for o in options]
+            self.app.push_screen(Pick(f"effort for {name}  (Esc = back)", options, current=ns.get("effort", "default")),
                                  functools.partial(self._ns_got, "effort"))
         elif step == "mode":
             choices = CODEX_SANDBOX_CHOICES if codex else MODE_CHOICES
@@ -1397,12 +1426,33 @@ class SupervisorPane(Widget):
             ns["message"] = value
         self._ns_next(step)
 
+    def _new_session_default_words(self, kind: str) -> str:
+        """What `default` means on the new-session model/effort screens, in words:
+        `Opus 5.5 · 1M-token context` / `medium` -- Pantheon's `[new_session]` value, or Claude
+        Code's own default when that is set to `default` too."""
+        value = getattr(self.cfg.new_session_settings(), kind, "default")
+        if value and value != "default":
+            return model_picker.describe(value) if kind == "model" else value
+        cc_model, cc_effort = model_picker.claude_code_defaults(self.cfg.claude_home)
+        value = cc_model if kind == "model" else cc_effort
+        if not value:
+            return f"keep Claude Code's own default {kind}"
+        return "Claude Code's: " + (model_picker.describe(value) if kind == "model" else value)
+
     def _ns_launch(self) -> None:
         ns = self._ns
         provider = self.providers.get(ns.get("provider", ""))
         if provider is None:
             return self.say(f"'{ns.get('provider')}' is not switched on in pantheon.toml", "warning")
-        options = {k: ns.get(k) for k in ("model", "effort", "mode") if ns.get(k) and ns.get(k) != "default"}
+        picked = {k: ns.get(k) for k in ("model", "effort", "mode")}
+        if ns.get("provider") == "claude" and not ns.get("resume"):
+            # `default` = Pantheon's own `[new_session]` pick, passed as a start flag, so a
+            # `/model` typed into some other session can never change what a new one gets.
+            settings = self.cfg.new_session_settings()
+            for key in ("model", "effort"):
+                if (picked.get(key) or "default") == "default":
+                    picked[key] = getattr(settings, key)
+        options = {k: v for k, v in picked.items() if v and v != "default"}
         if ns.get("resume"):
             options["resume"] = ns.get("session_id") or True   # an id -> `--resume <id>`; True -> `--continue`
         name = Path(ns["project_dir"]).name
@@ -1462,9 +1512,12 @@ class SupervisorPane(Widget):
         if target is None:
             return self.say(NOT_TYPEABLE, role="warning")
         current, _effort = self._current_model_effort(row.session_id)
+        cc_model, _cc_effort = model_picker.claude_code_defaults(self.cfg.claude_home)
+        detail = (f"Claude Code's default: {model_picker.describe(cc_model)}" if cc_model
+                  else model_picker.DEFAULT_DETAIL["claude"])
         model_picker.open_picker(self.app, "claude", "pick a model", current,
                                  functools.partial(self._model_picked, row.session_id, row.window_index, target),
-                                 cfg=self.cfg)
+                                 cfg=self.cfg, default_detail=detail)
 
     def _model_picked(self, session_id: str, window_index: int, target: str, alias: Optional[str]) -> None:
         if alias is None:
@@ -1877,6 +1930,27 @@ class SupervisorPane(Widget):
             self._log(exc)
         self.say(f"closed window {row.window_index}")
         self.refresh_rows()
+
+    def action_restart_session(self) -> None:
+        """`s`, or the row's `↻ Restart` button: reopen a gone Claude session's own conversation
+        in a new window (`--resume <id>`). Never on a running row -- that is `H`'s job."""
+        row = self.selected()
+        if row is None:
+            return self.say("no agent selected")
+        if row.status != AgentStatus.GONE or (row.provider or "claude") != "claude":
+            return self.say("restart is for a Claude session that has ended", role="warning")
+        if not row.cwd:
+            return self.say("no folder is recorded for that session", role="warning")
+        provider = self.providers.get("claude")
+        if provider is None:
+            return self.say("'claude' is not switched on in pantheon.toml", role="warning")
+        what = "the killed session" if row.last_action == KILLED_ACTION else "the session"
+        self.say(f"restarting {what} in {row.project or Path(row.cwd).name}...")
+        self.run_worker(
+            functools.partial(self._new_session_launch, row.cwd, provider, True, "",
+                              {"resume": row.session_id}),
+            thread=True,
+        )
 
     def action_open_folder(self) -> None:
         row = self.selected()

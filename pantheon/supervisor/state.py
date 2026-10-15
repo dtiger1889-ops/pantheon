@@ -360,6 +360,53 @@ def _fold_one_session(key: str, events: list[Event], projects_root: str) -> Agen
     return row
 
 
+# Written by bin/pane_exit when the program in a pane ends. Reading the Windows
+# Application log for a nonzero exit (events 1000/1001 naming claude.exe, into
+# state/health/pane-exits.jsonl) belongs to the step 5 watcher, not to this pure fold.
+PANE_EXIT = "PaneExit"
+# Events after which a session's ending is already on record: its own exit hook, or the deck.
+_ENDING_EVENTS = {"SessionEnd", "kill"}
+
+
+def _pane_exits(events: Iterable[Event]) -> dict[str, list[Event]]:
+    """Every `PaneExit` line by its tmux pane id, oldest first. They carry no session id (the pane
+    knows only its own id), so `by_session` files them under "?" and they never form a row."""
+    out: dict[str, list[Event]] = {}
+    for e in events:
+        if (e.event or "") == PANE_EXIT and e.tmux_pane:
+            out.setdefault(e.tmux_pane, []).append(e)
+    for group in out.values():
+        group.sort(key=lambda e: (_epoch(e.ts), e.ts or ""))
+    return out
+
+
+def _apply_pane_exit(row: AgentState, group: list[Event], exits: dict[str, list[Event]]) -> None:
+    """A Claude pane whose program ended (a `PaneExit` at or after the session's last event) while
+    the session's last word was not its own `SessionEnd` ended without its exit hook: the
+    2026-09-25 case, where `claude.exe` vanished and nothing said why. The row reads `ended
+    without its exit hook (exit N)` and is `gone` like any ended session, so a click still
+    resumes it. A normal `/exit` (SessionEnd, then PaneExit 0) is left exactly as it was.
+    Pane ids are reused, so only an exit after this session's last event counts: a newer session
+    in the same pane has events after the old exit."""
+    if row.provider != "claude" or not row.tmux_pane or not group:
+        return
+    candidates = exits.get(row.tmux_pane)
+    if not candidates:
+        return
+    last = max(group, key=lambda e: (_epoch(e.ts), e.ts or ""))
+    if (last.event or "") in _ENDING_EVENTS:
+        return
+    last_at = _epoch(last.ts)
+    for e in candidates:
+        if _epoch(e.ts) >= last_at:
+            code = e.extra.get("code")
+            row.status = AgentStatus.GONE
+            row.last_action = (f"ended without its exit hook (exit {code})" if code is not None
+                               else "ended without its exit hook")
+            row.last_event_ts = e.ts or row.last_event_ts
+            return
+
+
 def _unknown_row(w: TmuxWindow, pantheon_session: str, projects_root: str) -> AgentState:
     """A live agent pane no event has claimed: real, running, but pre-hook."""
     return AgentState(
@@ -405,8 +452,14 @@ def fold(
     visible: list[AgentState] = []
     claimed: set[int] = set()
 
-    folded = [_fold_one_session(key, group, projects_root)
-              for key, group in by_session(events or []).items() if key and key != "?"]
+    exits = _pane_exits(events or [])
+    folded = []
+    for key, group in by_session(events or []).items():
+        if not key or key == "?":
+            continue
+        row = _fold_one_session(key, group, projects_root)
+        _apply_pane_exit(row, group, exits)
+        folded.append(row)
     # Pane ids first, for every session, so the folder fallback below (non-Claude only) can never
     # hand a window to one session that another session's own pane id already names.
     matched: dict[int, Optional[TmuxWindow]] = {}

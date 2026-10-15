@@ -160,7 +160,10 @@ def test_claude_launch_opens_cds_starts_waits_then_types_the_briefing(tmp_path, 
     assert result.ok and result.window_index == 4 and result.tmux_pane == "%9"
     typed = _typed(fake)
     assert typed[0] == 'cd "C:/Home/x/Documents/Projects/hiking_log_v2"'
-    assert typed[1] == 'claude --name "hiking_log_v2: Tracker id: x"'   # a new session is named
+    # A new session is named, and the line ends by recording the pane's exit code.
+    assert typed[1] == 'claude --name "hiking_log_v2: Tracker id: x"' + claude_mod.exit_suffix()
+    script = (config_mod.PROJECT_ROOT / "bin" / "pane_exit").as_posix()
+    assert typed[1].endswith(f'; "{script}" $?')
     assert typed[2] == "Tracker id: x line two"                 # one line, no raw newline
     # Enter is always a separate call, never `-l ... Enter`.
     enters = [c for c in fake.calls if c[0] == "send-keys" and c[-1] == "Enter" and "-l" not in c]
@@ -299,6 +302,73 @@ def test_codex_job_records_queued_running_done_and_keeps_a_log(tmp_path, monkeyp
     # done now carries the job's final output line so an apology-run is visible at a glance
     assert last["detail"] == "exit code 0 · echo:do the thing"
     assert last["tracker_id"] == "hiking_log_v2-x"
+
+
+def test_codex_job_stops_a_child_that_outlives_its_deadline_and_checks_it_exited(tmp_path, monkeypatch):
+    """A stand-in codex that never finishes is terminated at the deadline; `done` says so."""
+    import subprocess
+    import sys
+    import time
+
+    from pantheon.dispatch import codex_job
+
+    started = []
+    real_popen = subprocess.Popen
+
+    class RecordingPopen(real_popen):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            started.append(self)
+
+    cfg = cfg_for(tmp_path, tools=config_mod.Tools(codex=sys.executable))
+    monkeypatch.setattr(codex_job, "codex_argv",
+                        lambda cfg, d: [sys.executable, "-c", "import time; time.sleep(600)"])
+    monkeypatch.setattr(codex_job.subprocess, "Popen", RecordingPopen)
+    brief = tmp_path / "b.md"
+    brief.write_text("hang", encoding="utf-8")
+    t0 = time.monotonic()
+    code = codex_job.run(cfg, str(brief), str(tmp_path), "codex-hang", wait_for_enter=False,
+                         deadline_seconds=1.0, stop_grace=5.0)
+    assert time.monotonic() - t0 < 30
+    assert code == codex_job.DEADLINE_EXIT_CODE
+    assert len(started) == 1 and started[0].poll() is not None  # the child really exited
+    last = json.loads(open(cfg.events_file, encoding="utf-8").read().splitlines()[-1])
+    assert last["event"] == "done"
+    assert last["detail"] == "exit code 124 · stopped at the 1-second deadline"
+
+
+def test_codex_job_window_waits_for_enter_only_a_bounded_time(tmp_path, monkeypatch):
+    """The finished window no longer blocks on input(): it waits at most the linger time, then exits."""
+    import os
+    import sys
+    import time
+
+    from pantheon.dispatch import codex_job
+
+    r, w = os.pipe()
+    with os.fdopen(r, encoding="utf-8") as line_in:
+        t0 = time.monotonic()
+        assert codex_job.wait_for_line(0.3, line_in) is False  # nothing typed: returns at the deadline
+        assert time.monotonic() - t0 < 5
+        os.write(w, b"\n")
+        assert codex_job.wait_for_line(5, line_in) is True     # Enter closes it at once
+    os.close(w)
+
+    # run() hands the window's wait to that bounded helper with the linger it was given
+    waits = []
+
+    class FakeTTY:
+        def isatty(self):
+            return True
+
+    cfg = cfg_for(tmp_path, tools=config_mod.Tools(codex=sys.executable))
+    monkeypatch.setattr(codex_job, "codex_argv", lambda cfg, d: [sys.executable, "-c", "print('ok')"])
+    monkeypatch.setattr(codex_job, "wait_for_line", lambda seconds, stream=None: waits.append(seconds) or False)
+    monkeypatch.setattr(sys, "stdin", FakeTTY())
+    brief = tmp_path / "b.md"
+    brief.write_text("x", encoding="utf-8")
+    assert codex_job.run(cfg, str(brief), str(tmp_path), "codex-linger", linger_seconds=42) == 0
+    assert waits == [42]
 
 
 def test_a_new_session_is_named_after_its_project_and_task(tmp_path):

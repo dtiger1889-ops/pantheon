@@ -148,6 +148,39 @@ def test_the_columns_table_leaves_the_assistant_out(tmp_path, monkeypatch):
     assert got["subtitle"].startswith("1 running")   # the gone row is not running
 
 
+def test_the_desk_table_names_the_assistant_not_its_last_folder(tmp_path, monkeypatch):
+    """the user 2026-10-08: the pit showed the Assistant under the folder it last worked in."""
+    from pantheon.supervisor import pane as pane_mod
+
+    cfg = make_cfg(tmp_path)
+    save_assistant(cfg, session_id="5f40ea10", pane_id="%17", started_at="2026-09-25T18:02:02.000Z")
+    rows = [row("5f40ea10", window=3, pane="%17", project="project_pantheon"),
+            row("life-os", project="life-os", window=4, pane="%7")]
+    monkeypatch.setattr(pane_mod.state_mod, "fold", lambda *a, **k: list(rows))
+    got = {}
+
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield pane_mod.SupervisorPane(cfg, window_source=lambda: [], id="supervisor")
+
+    async def drive():
+        app = _App()
+        async with app.run_test(size=(160, 30)) as pilot:
+            sup = app.query_one("#supervisor")
+            sup._mark_dialogs = lambda r: r
+            sup._mark_approvals = lambda r: r
+            sup.refresh_rows()
+            await pilot.pause()
+            now = pane_mod.datetime.now(pane_mod.timezone.utc)
+            col = [key for key, _, _ in sup._columns].index("project")
+            got["project"] = {r.session_id: sup._cell_values(r, now)[col] for r in sup.table_rows}
+            got["title"] = sup._detail_title(rows[0])
+
+    asyncio.run(drive())
+    assert got["project"] == {"5f40ea10": "Assistant", "life-os": "life-os"}
+    assert got["title"].startswith("Assistant · ")
+
+
 # --------------------------------------------------------------------------- E
 
 

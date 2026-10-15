@@ -15,6 +15,7 @@ whose first line's `cwd` matches wins outright. Documented rather than guessed.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config as config_mod
+from .. import eventcache as eventcache_mod
 from .. import glyphs as glyphs_mod
 from ..dispatch import sessions as sessions_mod
 from ..models import AgentState
@@ -518,6 +520,67 @@ def recent_entries(
     return out
 
 
+_entrypoint_cache: dict = {}   # transcript path -> (mtime, size, entrypoint or "")
+
+
+def _entrypoint(path: Optional[str]) -> str:
+    """The transcript's `entrypoint` (`cli` = an interactive session, `sdk-cli` = a `claude -p`
+    run), from the first record that carries one; cached by size + mtime."""
+    if not path:
+        return ""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ""
+    hit = _entrypoint_cache.get(path)
+    if hit is not None and hit[0] == st.st_mtime and hit[1] == st.st_size:
+        return hit[2]
+    found = ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh):
+                if n >= 50:
+                    break
+                m = re.search(r'"entrypoint"\s*:\s*"([^"]+)"', line)
+                if m:
+                    found = m.group(1)
+                    break
+    except OSError:
+        found = ""
+    _entrypoint_cache[path] = (st.st_mtime, st.st_size, found)
+    return found
+
+
+def killed_sessions(events) -> dict[str, str]:
+    """`{session id: when}` for sessions that were killed and have not started again since:
+    closed with `k` (the deck's own `kill` line), or ended with Claude Code's `other` reason --
+    its window or the whole tmux went away under it (the 2026-10-06 22:23 server death took six
+    that way). A later `SessionStart` for the same id (a resume) clears it. `/clear` ends with
+    `clear` and is never a kill. Callers still drop `claude -p` runs, which also end `other`."""
+    killed: dict[str, str] = {}
+    for e in events:
+        sid = getattr(e, "session_id", None)
+        if not sid:
+            continue
+        name = getattr(e, "event", "") or ""
+        if name == "kill" and getattr(e, "source", "") == "pantheon":
+            killed[sid] = e.ts or ""
+        elif name == "SessionEnd" and (getattr(e, "detail", "") or "") == "other":
+            killed.setdefault(sid, e.ts or "")
+        elif name == "SessionStart":
+            killed.pop(sid, None)
+    return killed
+
+
+def _mark_killed(entry: SessionEntry, killed: dict[str, str]) -> SessionEntry:
+    if entry.group != models_mod.RECENT or entry.provider != "claude":
+        return entry
+    when = killed.get(entry.session_id)
+    if when is None or _entrypoint(entry.transcript_path) not in ("cli", ""):
+        return entry
+    return dataclasses.replace(entry, killed_at=when or entry.modified_ts)
+
+
 def entries(
     rows: list[AgentState],
     cfg: Optional[config_mod.Config] = None,
@@ -533,4 +596,9 @@ def entries(
     live = [e for e in live if e.group == models_mod.LIVE or not hidden(e, cfg)]
     exclude = {r.session_id for r in rows if r.session_id}
     recent = recent_entries(cfg, limit=limit, exclude=exclude, claude_home=claude_home, codex_home=codex_home)
-    return live + recent
+    try:
+        events, _errors = eventcache_mod.read_events_cached(cfg.events_file)
+    except OSError:
+        events = []
+    killed = killed_sessions(events)
+    return [_mark_killed(e, killed) for e in live + recent]

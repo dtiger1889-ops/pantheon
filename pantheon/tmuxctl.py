@@ -1,9 +1,15 @@
 """The deck drives tmux itself. Thin subprocess wrappers; nothing here parses screen text."""
 from __future__ import annotations
 
+import itertools
 import os
 import shutil
 import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from .models import TmuxWindow
@@ -31,21 +37,122 @@ def tmux_path(preferred: Optional[str] = None) -> str:
 TMUX_TIMEOUT_SECONDS = 5
 
 
+# The tmux command log: one `start` line before every tmux call and
+# one `end` line after it, in state/tmux-commands.log. A `start` with no `end` is the command that
+# never came back -- the first thing a freeze capture reads. bin/pantheon's `tmux()` helper appends
+# to the same file. `[health] command_log = false` turns it off; the setting is read once per process.
+COMMAND_LOG_NAME = "tmux-commands.log"
+COMMAND_LOG_MAX_BYTES = 5 * 1024 * 1024
+_ARGV_CUT = 200
+_LOG_LOCK = threading.Lock()
+_LOG_COUNTER = itertools.count(1)
+_UNRESOLVED = object()
+_command_log_path: object = _UNRESOLVED   # Path, None (off), or not yet read
+
+
+def _command_log() -> Optional[Path]:
+    global _command_log_path
+    if _command_log_path is _UNRESOLVED:
+        try:
+            from . import config
+
+            cfg = config.load()
+            _command_log_path = (Path(cfg.state_dir) / COMMAND_LOG_NAME
+                                 if cfg.health_settings().command_log else None)
+        except Exception:
+            _command_log_path = None      # an unreadable config never stops a tmux call
+    return _command_log_path  # type: ignore[return-value]
+
+
+def _stamp() -> str:
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _caller() -> str:
+    frame = sys._getframe(1)
+    while frame is not None and frame.f_code.co_filename == __file__:
+        frame = frame.f_back
+    if frame is None:
+        return "?:?"
+    return f"{frame.f_globals.get('__name__', '?')}:{frame.f_code.co_name}"
+
+
+def _append(path: Path, line: str) -> None:
+    # Logging must never break or noticeably slow a tmux call: every file error is swallowed.
+    try:
+        with _LOG_LOCK:
+            try:
+                if path.stat().st_size > COMMAND_LOG_MAX_BYTES:
+                    os.replace(path, path.with_name(path.name + ".1"))
+            except FileNotFoundError:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _log_start(argv: list[str]) -> Optional[tuple[Path, str, float]]:
+    path = _command_log()
+    if path is None:
+        return None
+    entry_id = f"{os.getpid()}-{next(_LOG_COUNTER)}"
+    thread = "_".join(threading.current_thread().name.split()) or "?"
+    command = " ".join(argv).replace("\n", " ").replace("\r", " ")[:_ARGV_CUT]
+    _append(path, f"{_stamp()} start {entry_id} {_caller()} {thread} {command}")
+    return path, entry_id, time.monotonic()
+
+
+def _log_end(entry: Optional[tuple[Path, str, float]], outcome: str) -> None:
+    if entry is not None:
+        path, entry_id, _ = entry
+        _append(path, f"{_stamp()} end {entry_id} {outcome}")
+
+
+def _elapsed(entry: Optional[tuple[Path, str, float]]) -> str:
+    return f"{time.monotonic() - entry[2]:.3f}" if entry is not None else ""
+
+
+def _logged_run(argv: list[str], check: bool) -> subprocess.CompletedProcess:
+    entry = _log_start(argv)
+    try:
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=check,
+                                timeout=TMUX_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _log_end(entry, "timeout")
+        raise
+    except subprocess.CalledProcessError as exc:
+        _log_end(entry, f"rc={exc.returncode} {_elapsed(entry)}")
+        raise
+    except BaseException as exc:
+        _log_end(entry, f"error {type(exc).__name__} {_elapsed(entry)}")
+        raise
+    _log_end(entry, f"rc={result.returncode} {_elapsed(entry)}")
+    return result
+
+
 def run(*args: str, tmux: Optional[str] = None, check: bool = False) -> subprocess.CompletedProcess:
+    # Control commands never read the pane's terminal. Inheriting it makes MSYS2 retain
+    # a cygtty.attach.mutex handle per client launch (measured 2026-09-30).
     argv = [tmux_path(tmux), *args]
     try:
         try:
-            return subprocess.run(argv, capture_output=True, text=True, check=check,
-                                  timeout=TMUX_TIMEOUT_SECONDS)
+            return _logged_run(argv, check)
         except BlockingIOError:
-            # Cygwin/MSYS2 fork can fail transiently with EAGAIN; one retry after a short pause is enough, and cheaper than a blank deck.
-            import time as _time
-
-            _time.sleep(0.2)
-            return subprocess.run(argv, capture_output=True, text=True, check=check,
-                                  timeout=TMUX_TIMEOUT_SECONDS)
+            # Cygwin/MSYS2 fork can fail transiently with EAGAIN (52 times in one evening,
+            # 2026-09-02); one retry after a short pause is enough, and cheaper than a blank deck.
+            time.sleep(0.2)
+            return _logged_run(argv, check)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(argv, 124, "", "tmux timed out")
+    except OSError as exc:
+        # A second EAGAIN, or ENOMEM, while memory is short (2026-10-07: commit at 98%): tmux never
+        # started, which every caller already handles as a failed call -- never an exception that
+        # reaches a timer and takes the deck down with it.
+        if check:
+            raise subprocess.CalledProcessError(126, argv, "", f"tmux could not start: {exc}") from exc
+        return subprocess.CompletedProcess(argv, 126, "", f"tmux could not start: {exc}")
 
 
 def in_tmux() -> bool:

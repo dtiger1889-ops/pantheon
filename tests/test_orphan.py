@@ -100,3 +100,10 @@ def test_the_way_out_never_waits_on_a_held_logging_lock():
     orphan._bounded(gate.wait, seconds=0.2)
     gate.set()
     assert time.monotonic() - t0 < 2
+
+
+def test_terminal_gone_is_only_the_eio_of_a_closed_pane():
+    import errno
+    assert orphan.terminal_gone(OSError(errno.EIO, "Input/output error")) is True
+    assert orphan.terminal_gone(OSError(errno.ENOENT, "missing")) is False
+    assert orphan.terminal_gone(RuntimeError("boom")) is False

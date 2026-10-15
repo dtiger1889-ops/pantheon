@@ -2,6 +2,7 @@
 2026-09-01 from Claude Code's statusline docs, `ccusage` output, and a Codex session log."""
 import json
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -198,6 +199,29 @@ def test_a_failed_command_never_raises(cfg, monkeypatch):
 
 def test_run_json_survives_a_missing_program(cfg):
     assert sources.run_json(["definitely-not-a-program-xyz"], timeout=5) is None
+
+
+def test_run_json_disconnects_terminal_input_and_preserves_command_options(monkeypatch):
+    argv = ["fake-ccusage", "daily", "--json"]
+    env = {"EXAMPLE": "value"}
+
+    def runner(command, **kwargs):
+        assert command == argv
+        assert kwargs == dict(stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              env=env, timeout=7, check=False)
+        return subprocess.CompletedProcess(command, 0, '{"tokens": 42}', "")
+
+    monkeypatch.setattr(sources.subprocess, "run", runner)
+    assert sources.run_json(argv, env=env, timeout=7) == {"tokens": 42}
+
+
+def test_run_json_timeout_stays_unavailable_and_never_raises(monkeypatch):
+    def runner(command, **kwargs):
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(sources.subprocess, "run", runner)
+    assert sources.run_json(["slow-ccusage"], timeout=7) is None
 
 
 # ---- 3. codex session logs ------------------------------------------------

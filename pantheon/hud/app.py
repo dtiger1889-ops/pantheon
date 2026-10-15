@@ -1067,6 +1067,10 @@ class HudApp(App):
         """`R`: the same restart screens as the deck (pantheon/restart.py)."""
         restart_mod.ask(self, self.cfg, lambda m, tone=None: self.show_message(m))
 
+    async def action_quit(self) -> None:
+        """`q` asks before it closes this window (restart.ask_quit)."""
+        restart_mod.ask_quit(self, self.exit, lambda m, tone=None: self.show_message(m))
+
     def action_help(self) -> None:
         help_widget = self.query_one("#hud-help", Static)
         help_widget.display = not help_widget.display

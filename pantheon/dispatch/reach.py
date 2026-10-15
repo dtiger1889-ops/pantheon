@@ -51,7 +51,7 @@ def probe_command(session: str = DEFAULT_SESSION, *, ssh_bin: Optional[str] = No
         "-o", "BatchMode=yes",
         "-o", f"ConnectTimeout={connect_timeout}",
         "localhost",
-        f"{remote_tmux} has-session -t {session}",
+        f"{remote_tmux} has-session -t {session} </dev/null",
     ]
 
 
@@ -64,7 +64,7 @@ def pantheon_tmux_reachable(session: str = DEFAULT_SESSION, *, ssh_bin: Optional
     argv = probe_command(session, ssh_bin=ssh_bin)
     run = runner or subprocess.run
     try:
-        completed = run(argv, capture_output=True, text=True, timeout=timeout)
+        completed = run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return False
     return completed.returncode == 0

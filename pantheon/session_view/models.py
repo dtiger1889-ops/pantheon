@@ -132,6 +132,10 @@ class SessionEntry:
                                             # the transcript (`gitmarks.py`), None = never seen;
                                             # `gitmarks.stop_point_text(entry)` words them
                                             #
+    killed_at: Optional[str] = None         # RECENT, Claude only: ISO ts the session was killed
+                                            # (`k`, or its window/tmux died under it) and it has
+                                            # not started again since; `recent.killed_sessions`
+                                            #
 
     @property
     def can_type(self) -> bool:

@@ -357,7 +357,7 @@ async def test_shift_p_again_leaves_the_pit_and_returns_to_the_deck(tmp_path, mo
 
 @drives_the_screen
 async def test_shift_p_is_refused_below_desk_width(tmp_path, monkeypatch):
-    """acceptance 5 / S-UX R1: too narrow to tile side by side is too narrow to enter."""
+    """acceptance 5 / : too narrow to tile side by side is too narrow to enter."""
     from pantheon.deck import app as deck_app_mod
 
     entered = []
@@ -566,6 +566,9 @@ async def test_quit_puts_a_staged_session_back_first(tmp_path, monkeypatch):
     async with app.run_test(size=(180, 45)) as pilot:
         await pilot.pause()
         await pilot.press("q")
+        await pilot.pause()
+        assert released == []          # q asks first; nothing moves until Yes
+        await pilot.press("y")
         await pilot.pause()
     assert released == [1]
 

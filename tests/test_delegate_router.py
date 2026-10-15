@@ -37,6 +37,8 @@ def test_path_a_when_reachable_builds_ssh_new_window_with_planner_model():
     assert "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT" in joined
     assert "read CHECKPOINT.md and summarize open threads" in joined
     assert seen["kwargs"]["timeout"] == delegate.LAUNCH_TIMEOUT_SECONDS
+    assert seen["kwargs"]["stdin"] == subprocess.DEVNULL
+    assert argv[-1].endswith(" </dev/null")
 
 
 def test_path_a_default_tier_resolves_to_sonnet():

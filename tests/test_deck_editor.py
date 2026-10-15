@@ -108,4 +108,6 @@ async def test_quit_moves_the_editor_out_before_the_deck_exits(tmp_path, monkeyp
         await pilot.pause()
         await pilot.press("q")
         await pilot.pause()
+        await pilot.press("y")         # q asks first
+        await pilot.pause()
     assert moved == [1]

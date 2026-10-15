@@ -48,10 +48,52 @@ def test_versions_used_lately_come_first_and_the_rest_wait_behind_show_all():
 
 
 def test_the_newest_version_and_the_current_model_are_never_hidden():
+    newest = [m.value for m in mp.catalogue("claude")[1] if m.family == "Sonnet"][0]
     shown, _ = mp.rank_versions("claude", "Sonnet", {})
-    assert [m.value for m in shown] == ["claude-sonnet-5"]
+    assert [m.value for m in shown] == [newest]
     shown, _ = mp.rank_versions("claude", "Sonnet", {}, current="Sonnet 4.6")
-    assert [m.value for m in shown] == ["claude-sonnet-5", "claude-sonnet-4-6"]
+    assert [m.value for m in shown] == [newest, "claude-sonnet-4-6"]
+
+
+def test_a_model_the_lists_lack_shows_up_by_itself_as_its_familys_newest(tmp_path):
+    """Request of 2026-09-28 (Sonnet 5.5 shipped, the picker lacked it): a model this machine
+    already knows about joins the picker with no code edit, from the transcripts, Claude Code's own
+    extra `/model` options in `~/.claude.json`, and Codex's own `models_cache.json`."""
+    claude_home, codex_home, state = tmp_path / ".claude", tmp_path / ".codex", tmp_path / "state"
+    proj = claude_home / "projects" / "C--x"
+    proj.mkdir(parents=True)
+    log = proj / "a.jsonl"
+    log.write_text(json.dumps({"message": {"model": "claude-opus-9-2"}}) + "\n"
+                   + json.dumps({"message": {"model": "claude-mythos-1"}}) + "\n", encoding="utf-8")
+    os.utime(log, (NOW - 60, NOW - 60))
+    (tmp_path / ".claude.json").write_text(json.dumps(
+        {"additionalModelOptionsCache": [{"value": "claude-sonnet-9[1m]", "label": "Sonnet"}]}), encoding="utf-8")
+    codex_home.mkdir()
+    (codex_home / "models_cache.json").write_text(json.dumps({"models": [
+        {"slug": "gpt-9.1-nova", "visibility": "list"}, {"slug": "gpt-6-astra", "visibility": "list"},
+        {"slug": "gpt-9-secret", "visibility": "hide"}]}), encoding="utf-8")
+    before = {p: mp.all_values(p) for p in ("claude", "codex")}
+
+    usage = mp.read_usage(claude_home, codex_home, state, now=NOW)
+    assert usage["claude"]["claude-opus-9-2"] == NOW - 60
+    mp.discover_models(claude_home, codex_home, usage)
+
+    for provider in ("claude", "codex"):
+        families, models = mp.catalogue(provider)
+        assert set(before[provider]) <= set(mp.all_values(provider))      # nothing ever dropped
+        assert len({f.key for f in families}) == len(families)          # one key per family
+        for fam in families:                                             # the rule: each family's
+            newest = [m for m in models if m.family == fam.name][0]      # newest is on screen
+            assert mp.rank_versions(provider, fam.name, {})[0][0] == newest   # with no use at all
+    assert [m.value for m in mp.rank_versions("claude", "Opus", {})[0]] == ["claude-opus-9-2"]
+    assert mp.resolve("opus") == "claude-opus-9-2" and mp.resolve("Opus 9.2") == "claude-opus-9-2"
+    assert mp.family_of("claude-mythos-1") == "Mythos"
+    assert [m.value for m in mp.catalogue("claude")[1] if m.family == "Sonnet"][:2] == \
+        ["claude-sonnet-9[1m]", "claude-sonnet-5-5"]
+    assert mp.resolve("sonnet") == "claude-sonnet-5-5"                   # a 1M-only id is not the alias
+    assert mp.rank_families("codex", {})[0].name == "GPT-9.1"
+    assert mp.resolve("gpt-9.1-nova", "codex") == "gpt-9.1-nova"
+    assert "gpt-9-secret" not in mp.all_values("codex")                   # Codex hides it, so do we
 
 
 def test_families_are_ordered_by_their_most_recent_use():
@@ -74,7 +116,7 @@ def test_resolve_reads_ids_short_names_and_status_line_names():
     assert mp.resolve("claude-opus-5-5") == "claude-opus-5-5"
     assert mp.resolve("Opus 5.5") == "claude-opus-5-5"
     assert mp.resolve("claude-opus-5-5", big_context=True) == "claude-opus-5-5[1m]"
-    assert mp.resolve("sonnet[1m]") == "claude-sonnet-5[1m]"
+    assert mp.resolve("sonnet[1m]") == "claude-sonnet-5-5"
     assert mp.resolve("claude-haiku-4-5") == "claude-haiku-4-5-20251001"
     assert mp.resolve("default") is None and mp.resolve("<synthetic>") is None
     assert mp.family_of("fable") == "Fable"

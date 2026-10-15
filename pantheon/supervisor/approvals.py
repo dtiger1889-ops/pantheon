@@ -113,10 +113,14 @@ class Approvals:
 
     def __init__(self, capture: Optional[Callable[..., str]] = None,
                  press: Optional[Callable[..., bool]] = None, max_reads: int = 6,
-                 sleep: Optional[Callable[[float], None]] = None) -> None:
+                 sleep: Optional[Callable[[float], None]] = None,
+                 scan_capture: Optional[Callable[..., str]] = None) -> None:
         # None = `tmuxctl.capture` / `dialogs.send_key` / `time.sleep`, looked up at call time so
         # a test or the render script can replace the module function.
         self._capture_fn = capture
+        # The per-tick read may come from the tmux feed (`pantheon/tmuxfeed.py`, a few seconds
+        # old); answering always reads the screen live. An injected `capture` wins over both.
+        self._scan_capture = scan_capture
         self._press = press
         self.max_reads = max_reads
         self._sleep = sleep
@@ -164,7 +168,10 @@ class Approvals:
             screen_prompt = None
             if tgt is not None and reads < self.max_reads and row.provider == "claude":
                 reads += 1
-                screen = self._capture(tgt, tmux=tmux)
+                if self._scan_capture is not None and self._capture_fn is None:
+                    screen = self._scan_capture(tgt, tmux=tmux)
+                else:
+                    screen = self._capture(tgt, tmux=tmux)
                 if screen and screen.strip():
                     screen_prompt = ap.read_screen(screen)
                     if screen_prompt is None:

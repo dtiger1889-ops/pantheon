@@ -44,7 +44,8 @@ def make_root(tmp_path: Path) -> Path:
 
 def make_cfg(tmp_path: Path, root: Path):
     cfg = config_mod.Config(vault=str(tmp_path / "vault"), state_dir=str(tmp_path / "state"))
-    cfg = dataclasses.replace(cfg, projects_root=str(root))
+    # pytest's tmp_path sits under /tmp, which `[sessions] hide_folders` hides by default.
+    cfg = dataclasses.replace(cfg, projects_root=str(root), sessions={"hide_folders": []})
     config_mod.ensure_state_dirs(cfg)
     return cfg
 
@@ -509,7 +510,7 @@ async def test_ctrl_a_sorts_a_to_z(tmp_path):
 
 @drives_the_screen
 async def test_add_folder_opens_a_directory_tree_not_a_typed_path_box(tmp_path):
-    """S-UX pass: Ctrl+O now browses first (`FolderBrowser`); the old typed-path box is still one
+    """: Ctrl+O now browses first (`FolderBrowser`); the old typed-path box is still one
     keystroke away (Ctrl+P) rather than gone."""
     projects, root = _projects(tmp_path)
     app = _PickerHarness(projects)
@@ -692,7 +693,7 @@ async def test_folder_browser_ctrl_p_falls_back_to_typing_a_path(tmp_path):
     assert app.result == str(target).replace("\\", "/")
 
 
-# ---------------------------------------------------------------- S-UX pass: quick actions
+# ---------------------------------------------------------------- : quick actions
 
 
 @drives_the_screen
@@ -871,3 +872,18 @@ def test_claude_resume_types_continue():
     assert claude_command("claude") == "claude"
     assert claude_command("claude", {"resume": True}) == "claude --continue"
     assert claude_command("claude", {"model": "opus"}) == "claude"
+
+
+def test_a_used_folder_inside_a_hidden_folder_is_not_a_project(tmp_path):
+    """A test run's throwaway copy (`Temp/.../garden_notes`) is not listed beside the real project
+    (2026-10-06: three `garden_notes` lines in the picker, the sidebar heading on the copy)."""
+    root = make_root(tmp_path)
+    cfg = make_cfg(tmp_path, root)
+    temp = tmp_path / "Temp"
+    copy = temp / "trial" / "garden_notes"
+    copy.mkdir(parents=True)
+    (copy / "CLAUDE.md").write_text("x", encoding="utf-8")
+    cfg = dataclasses.replace(cfg, sessions={"hide_folders": [str(temp)]})
+    events = [Event(ts=iso(60), event="SessionStart", source="claude", cwd=str(copy))]
+    names = {p.name for p in projects_mod.list_projects(cfg, events)}
+    assert "garden_notes" not in names

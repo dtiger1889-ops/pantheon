@@ -634,3 +634,55 @@ def test_a_project_subfolder_cwd_is_unchanged_by_the_root_cwd_rule():
     via `derive_project` alone -- the root-cwd special case never fires for it."""
     row = only(folded(), "s1")
     assert row.project == "hiking_log_v2"
+
+
+# --------------------------------------------------------------------------- PaneExit
+
+
+def pane_exit(minutes_ago: float, pane: str, code) -> Event:
+    return Event.from_dict({"ts": ts(minutes_ago), "source": "pantheon", "event": "PaneExit",
+                            "code": code, "tmux_pane": pane})
+
+
+def test_pane_exit_without_session_end_reads_ended_without_its_exit_hook():
+    """The 2026-09-25 case: claude.exe vanished, no SessionEnd, only the pane's exit code."""
+    events = [
+        ev(ts=ts(6), event="SessionStart", session_id="gm", cwd=ROOT + "/game_modding", tmux_pane="%5"),
+        ev(ts=ts(4), event="PostToolUse", session_id="gm", cwd=ROOT + "/game_modding", tmux_pane="%5",
+           tool_name="Bash"),
+        pane_exit(2, "%5", 3),
+    ]
+    windows = [win(5, "game_modding", "bash", ROOT + "/game_modding", "%5")]
+    row = only(st.fold(events, windows, NOW, projects_root=ROOT), "gm")
+    assert row.status == AgentStatus.GONE
+    assert row.last_action == "ended without its exit hook (exit 3)"
+    assert row.last_event_ts == ts(2)
+    assert row.status in st.ENDED       # ended rows sit with the finished ones; a click resumes them
+
+
+def test_session_end_then_pane_exit_zero_shows_exactly_as_before():
+    """A normal /exit: SessionEnd fires, then the pane records exit 0. Nothing changes."""
+    base = [
+        ev(ts=ts(6), event="SessionStart", session_id="ok", cwd=ROOT + "/scratchwork", tmux_pane="%6"),
+        ev(ts=ts(3), event="SessionEnd", session_id="ok", cwd=ROOT + "/scratchwork", tmux_pane="%6",
+           detail="prompt_input_exit"),
+    ]
+    windows = [win(6, "scratchwork", "bash", ROOT + "/scratchwork", "%6")]
+    before = only(st.fold(base, windows, NOW, projects_root=ROOT), "ok")
+    after = only(st.fold(base + [pane_exit(3, "%6", 0)], windows, NOW, projects_root=ROOT), "ok")
+    assert after == before
+    assert after.status == AgentStatus.GONE and after.last_action == "session ended"
+
+
+def test_pane_exit_from_an_older_session_does_not_touch_a_newer_one_in_the_same_pane():
+    """tmux reuses pane ids: an exit before this session's events belongs to someone else."""
+    events = [
+        pane_exit(8, "%7", 1),
+        ev(ts=ts(5), event="SessionStart", session_id="new", cwd=ROOT + "/PMbot", tmux_pane="%7"),
+        ev(ts=ts(1), event="PostToolUse", session_id="new", cwd=ROOT + "/PMbot", tmux_pane="%7",
+           tool_name="Read"),
+    ]
+    windows = [win(7, "PMbot", "node", ROOT + "/PMbot", "%7")]
+    row = only(st.fold(events, windows, NOW, projects_root=ROOT), "new")
+    assert row.status == AgentStatus.WORKING
+    assert "exit hook" not in row.last_action

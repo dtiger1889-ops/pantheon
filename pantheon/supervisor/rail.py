@@ -33,11 +33,13 @@ from textual.widgets import ListItem, ListView, Static
 
 from .. import assistant as assistant_mod
 from .. import config as config_mod
+from ..keepalive import KeepAlive
 from .. import eventcache as eventcache_mod
 from .. import events as events_mod
 from .. import glyphs as glyphs_mod
 from .. import theme as theme_mod
 from .. import tmuxctl
+from .. import tmuxfeed
 from ..models import AgentState, TmuxWindow, parse_ts
 from ..session_view import models as session_models
 from ..session_view import recent as recent_mod
@@ -58,6 +60,9 @@ EDIT_LABEL = "✎ Edit a file"
 ASSISTANT_LABEL = "◆ Assistant"
 MORE_PROJECTS_LABEL = "MORE PROJECTS"
 ON_SCREEN = "on screen"
+# A killed Claude session (closed with `k`, or its tmux went away under it): click restarts it.
+KILLED_GLYPH = "↻"
+KILLED_LINE = "killed {age} · click restarts"
 
 
 def _norm(path: Optional[str]) -> str:
@@ -92,7 +97,7 @@ def _git_age(entry: SessionEntry) -> str:
     return ""
 
 
-class SessionSidebar(Widget):
+class SessionSidebar(KeepAlive, Widget):
     """Projects with their sessions nested under them."""
 
     class Selected(Message):
@@ -190,7 +195,8 @@ class SessionSidebar(Widget):
         # supervisor pane's own already-folded rows instead of re-parsing the event log and
         # re-polling tmux a second time on the same tick (perf sweep pattern).
         self._rows_source = rows_source
-        self._window_source = window_source or (lambda: tmuxctl.list_windows_cached(None))
+        self._window_source = window_source or (lambda: tmuxfeed.windows_or_live(
+            self.cfg, lambda: tmuxctl.list_windows_cached(None)))
         # Injectable so a test can hand in fixed `SessionEntry` rows without touching disk
         # (`recent.py` reads real transcript files by default).
         self._entries_source = entries_source or (lambda rows: recent_mod.entries(rows, self.cfg))
@@ -338,8 +344,11 @@ class SessionSidebar(Widget):
             for entry in group["live"]:
                 number += 1
                 plan.append(("session", entry, number if number <= MAX_NUMBERED else None))
-            recent = group["recent"]
-            limit = len(recent) if group["key"] in self._expanded else RECENT_PER_PROJECT
+            # Killed sessions first and always listed, so one is never hidden under `…N more`.
+            recent = ([e for e in group["recent"] if e.killed_at]
+                      + [e for e in group["recent"] if not e.killed_at])
+            killed = sum(1 for e in recent if e.killed_at)
+            limit = len(recent) if group["key"] in self._expanded else max(RECENT_PER_PROJECT, killed)
             for entry in recent[:limit]:
                 plan.append(("session", entry, None))
             if len(recent) > limit:
@@ -416,6 +425,13 @@ class SessionSidebar(Widget):
                             style=f"bold {colour}" if shown.summary.warning else colour)
                 return text
             text.append("\n      " + " · ".join(m for m in meta if m), style=dim)
+            return text
+        if entry.killed_at:
+            # the user, 2026-10-06: "restart a previously killed session, obviously labeled such".
+            warning = theme_mod.TOKENS.get("warning", chrome)
+            glyph = "*" if self._ascii else KILLED_GLYPH
+            text = self._line(f"  {glyph} {title}", style=f"bold {warning}")
+            text.append(f"\n  {KILLED_LINE.format(age=_age(entry.killed_at) or 'a while')}", style=warning)
             return text
         age = _age(entry.modified_ts)
         text = self._line(f"  · {title}", style=dim)

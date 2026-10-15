@@ -222,7 +222,7 @@ def test_a_tool_still_running_says_so_instead_of_showing_nothing():
 
 
 def test_a_failed_tool_says_the_word_error_not_just_a_colour():
-    """S-UX R5: colour is never the only signal."""
+    """: colour is never the only signal."""
     conv = m.Conversation(session_id="s", path="p",
                           items=(tool_item(summary="Bash pytest -q", is_error=True),))
     out = run_tile(conv=conv,

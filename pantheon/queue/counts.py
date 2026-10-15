@@ -52,11 +52,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--vault", help="read a different vault folder's parent, for testing")
     parser.add_argument("--base", help="read a specific .base file (any absolute path) instead of "
                         "pantheon.toml's own base_file, so a second Base can be checked before "
-                        "switching to it (S11 step 2)")
+                        "switching to it")
     parser.add_argument("--spec", action="store_true",
                         help="use the rules written in the specs instead of the ones in the Base file")
     parser.add_argument("--checkpoint", metavar="PROJECT",
-                        help="S21: count a project's own CHECKPOINT.md `## Open threads` instead "
+                        help="count a project's own CHECKPOINT.md `## Open threads` instead "
                              "of the vault-wide Sprints view -- the drilled-queue's own numbers, "
                              "to check a parse against the file by hand")
     args = parser.parse_args(argv)

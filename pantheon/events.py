@@ -56,7 +56,53 @@ def rotate_if_large(path: str | os.PathLike, max_bytes: int = MAX_BYTES) -> Opti
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     target = p.with_name(f"{p.stem}-{stamp}{p.suffix}")
     p.rename(target)
+    carry_forward(target, p)
     return target
+
+
+ENDED_EVENTS = {"SessionEnd", "kill"}
+
+
+def carry_forward(archived: str | os.PathLike, current: str | os.PathLike) -> int:
+    """Copy the last event of every session still open in `archived` into `current`, unless
+    `current` already has events for that session. Without this, a session that stayed idle
+    across a rotation has no events in the new log, so the deck shows it as "no events yet" and
+    a full restart cannot find its conversation ID (2026-09-29). Returns the number copied."""
+    last: dict[str, str] = {}
+    ended: set[str] = set()
+    a = Path(archived)
+    if not a.exists():
+        return 0
+    with open(a, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            s = line.strip().lstrip("﻿")
+            if not s:
+                continue
+            try:
+                d = json.loads(s)
+            except ValueError:
+                continue
+            if not isinstance(d, dict):
+                continue
+            sid = d.get("session_id") or d.get("job_id")
+            if not sid:
+                continue
+            if d.get("event") in ENDED_EVENTS:
+                ended.add(sid)
+                last.pop(sid, None)
+                continue
+            ended.discard(sid)
+            last[sid] = s
+    present: set[str] = set()
+    cur = Path(current)
+    if cur.exists():
+        existing, _ = read_events(cur)
+        present = {e.session_id or e.job_id for e in existing if (e.session_id or e.job_id)}
+    lines = [s for sid, s in last.items() if sid not in present and sid not in ended]
+    if lines:
+        with open(cur, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(lines) + "\n")
+    return len(lines)
 
 
 def norm_path(s: Optional[str]) -> str:

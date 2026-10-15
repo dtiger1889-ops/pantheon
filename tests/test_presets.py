@@ -148,3 +148,41 @@ def test_open_without_choices_types_nothing(wired):
     cfg, providers, typed = wired
     assert projects_mod.main(["open", "loom-os"]) == 0
     assert typed == []
+
+
+def test_open_without_choices_uses_the_new_session_defaults(wired):
+    """A session the Assistant starts by command comes up like one from the `n` picker."""
+    cfg, providers, typed = wired
+    assert projects_mod.main(["open", "loom-os"]) == 0
+    ns = cfg.new_session_settings()
+    assert providers["claude"].calls[0][3] == {"start_model": ns.model, "start_effort": ns.effort}
+
+
+def test_open_typed_model_beats_the_new_session_default(wired):
+    cfg, providers, typed = wired
+    assert projects_mod.main(["open", "loom-os", "--model", "sonnet"]) == 0
+    options = providers["claude"].calls[0][3]
+    assert options["start_model"] == "sonnet"
+    assert options["start_effort"] == cfg.new_session_settings().effort
+
+
+def test_open_message_file_becomes_the_first_message(wired, tmp_path):
+    cfg, providers, typed = wired
+    brief = tmp_path / "brief.md"
+    brief.write_text("Spinoff: permissions\n\nIt's \"quoted\" and $odd.\n", encoding="utf-8")
+    assert projects_mod.main(["open", "loom-os", "--message-file", str(brief)]) == 0
+    sent = Path(providers["claude"].calls[0][1]).read_text(encoding="utf-8")
+    assert sent.startswith("Spinoff: permissions") and '"quoted" and $odd.' in sent
+
+
+def test_open_missing_message_file_starts_nothing(wired, tmp_path, capsys):
+    cfg, providers, typed = wired
+    assert projects_mod.main(["open", "loom-os", "--message-file", str(tmp_path / "nope.md")]) == 2
+    assert providers["claude"].calls == []
+    assert "nothing started" in capsys.readouterr().out
+
+
+def test_open_resume_adds_no_new_session_default(wired):
+    cfg, providers, typed = wired
+    assert projects_mod.main(["open", "loom-os", "--resume"]) == 0
+    assert "start_model" not in (providers["claude"].calls[0][3] or {})

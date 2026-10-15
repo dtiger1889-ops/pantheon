@@ -21,6 +21,7 @@ it writes on the way out is given two seconds, not forever.
 """
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import threading
@@ -92,6 +93,13 @@ class OrphanWatch:
         _bounded(lambda: log.info("tmux server %s is gone; leaving", self.pid))
         self._leave()
         return True
+
+
+def terminal_gone(exc: BaseException) -> bool:
+    """True for the EIO an app hits printing its exit message to a pane that a restart has
+    already closed. That is the restart working, not a crash: every 'the deck stopped' and 'the
+    queue pane stopped' ERROR from 2026-09-26 to 2026-10-05 was this one."""
+    return isinstance(exc, OSError) and exc.errno == errno.EIO
 
 
 def start_watchdog(watch: OrphanWatch, seconds: float = CHECK_SECONDS,

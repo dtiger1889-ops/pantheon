@@ -13,6 +13,8 @@ def test_reachable_on_exit_zero():
         joined = " ".join(argv)
         assert "has-session -t pantheon" in joined
         assert "BatchMode=yes" in argv
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert argv[-1].endswith(" </dev/null")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     assert reach.pantheon_tmux_reachable(runner=fake_run) is True

@@ -82,19 +82,19 @@ CLAUDE_MODELS = [
     ModelChoice("claude", "Opus", "4.7", "claude-opus-4-7"),
     ModelChoice("claude", "Opus", "4.6", "claude-opus-4-6"),
     ModelChoice("claude", "Opus", "4.5", "claude-opus-4-5"),
+    ModelChoice("claude", "Sonnet", "5.5", "claude-sonnet-5-5"),
     ModelChoice("claude", "Sonnet", "5", "claude-sonnet-5"),
     ModelChoice("claude", "Sonnet", "5", "claude-sonnet-5[1m]", "1M-token context"),
     ModelChoice("claude", "Sonnet", "4.6", "claude-sonnet-4-6"),
     ModelChoice("claude", "Sonnet", "4.5", "claude-sonnet-4-5"),
     ModelChoice("claude", "Haiku", "4.5", "claude-haiku-4-5-20251001"),
 ]
-# What Claude Code's short names stand for today. Used only to date a log line that named a short name.
-CLAUDE_ALIASES = {
-    "fable": "claude-fable-5-1", "best": "claude-fable-5-1", "opus": "claude-opus-5-5",
-    "sonnet": "claude-sonnet-5", "haiku": "claude-haiku-4-5-20251001",
-    "opus[1m]": "claude-opus-5-5[1m]", "sonnet[1m]": "claude-sonnet-5[1m]",
-    "claude-haiku-4-5": "claude-haiku-4-5-20251001",
-}
+# Short names that are not a family word. A family word (`opus`, `sonnet[1m]`, `best` = Fable)
+# stands for the newest version of that family in `catalogue()`, as on the Anthropic API column of
+# code.claude.com/docs/en/model-config (fetched 2026-09-28), so it follows a newly found model by
+# itself. Used only to date a log line that named a short name.
+CLAUDE_ALIASES = {"claude-haiku-4-5": "claude-haiku-4-5-20251001"}
+_ALIAS_FAMILY = {"best": "fable"}
 
 # Codex: the models on this box.
 CODEX_FAMILIES = [Family("codex", "GPT-6", "6"), Family("codex", "GPT-5.6", "5")]
@@ -112,10 +112,150 @@ SHOW_ALL = "show-all"
 FAMILY_PREFIX = "family:"
 
 
-def catalogue(provider: str) -> tuple[list[Family], list[ModelChoice]]:
+def describe(value: Optional[str], provider: str = "claude") -> str:
+    """What a model value means in words: `claude-opus-5-5[1m]` -> `Opus 5.5 · 1M-token context`.
+    Empty for `default`/nothing; the raw value when it is not in the catalogue."""
+    if not value or value == "default":
+        return ""
+    wanted = resolve(value, provider) or value
+    for m in catalogue(provider)[1]:
+        if m.value == wanted:
+            name = f"{m.family} {m.version}"
+            return f"{name} · {m.note}" if m.note else name
+    return str(value)
+
+
+def claude_code_defaults(claude_home) -> tuple[str, str]:
+    """(model, effort) a Claude session starts on when nothing is passed: `ANTHROPIC_MODEL` in
+    `~/.claude/settings.json`'s `env` block beats its `model` field; `effortLevel` for effort.
+    Empty strings when the file says nothing (or cannot be read)."""
+    try:
+        data = json.loads((Path(str(claude_home)) / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    env = data.get("env") if isinstance(data.get("env"), dict) else {}
+    model = str(env.get("ANTHROPIC_MODEL") or data.get("model") or "")
+    return model, str(data.get("effortLevel") or "")
+
+
+# --------------------------------------------------------------------------- models found on this machine
+# The lists above are a floor, never the whole list. At picker open, `discover_models` adds every well-formed id the lists
+# lack from: Claude Code's own extra `/model` options (`additionalModelOptionsCache` in
+# `~/.claude.json`), Codex CLI's own model list (`~/.codex/models_cache.json`, which Codex
+# refreshes itself; entries it shows, `visibility: list`), and the recent logs `read_usage` read.
+# A new id lands in its family by version number, so a new release becomes the family's newest
+# (never hidden); an id of an unknown family gets a family of its own.
+
+_CLAUDE_ID = re.compile(r"^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$")
+_CODEX_ID = re.compile(r"^gpt-(\d+(?:\.\d+)?)(?:-([a-z0-9][a-z0-9.\-]*))?$")
+_FOUND: dict[str, tuple[str, ...]] = {"claude": (), "codex": ()}
+_MERGED: dict[str, tuple] = {}
+
+
+def _parse_new(ident: Optional[str], provider: str) -> Optional[ModelChoice]:
+    """A `ModelChoice` for an id the lists above do not carry, or None when it is not model-shaped."""
+    if not ident:
+        return None
     if provider == "codex":
-        return CODEX_FAMILIES, CODEX_MODELS
-    return CLAUDE_FAMILIES, CLAUDE_MODELS
+        m = _CODEX_ID.match(ident)
+        return ModelChoice("codex", f"GPT-{m.group(1)}", m.group(2) or m.group(1), ident) if m else None
+    m = _CLAUDE_ID.match(ident)
+    if not m:
+        return None
+    version = m.group(2) + (f".{m.group(3)}" if m.group(3) else "")
+    return ModelChoice("claude", m.group(1).capitalize(), version, ident,
+                       "1M-token context" if m.group(4) else "")
+
+
+def _num(text: str) -> Optional[tuple[int, int]]:
+    try:
+        parts = [int(p) for p in text.split(".")]
+    except ValueError:
+        return None
+    return (parts + [0, 0])[0], (parts + [0, 0])[1]
+
+
+def _vkey(m: ModelChoice) -> Optional[tuple[int, int, int]]:
+    """Newer sorts higher; the plain id sorts just above its 1M variant; None = not a number (`plan`)."""
+    num = _num(m.version)
+    return None if num is None else num + (0 if m.note else 1,)
+
+
+def _free_key(name: str, taken: set[str]) -> str:
+    low = name.lower()
+    for ch in [c for c in reversed(low) if c.isdigit()] + [c for c in low if c.isalpha()] \
+            + list("bcefgijklmnpqrtuvwxyz0123456789"):
+        if ch not in taken:
+            return ch
+    return ""
+
+
+def _merge(provider: str, families: list[Family], models: list[ModelChoice],
+           found: tuple[str, ...]) -> tuple[list[Family], list[ModelChoice]]:
+    new = [c for c in (_parse_new(i, provider) for i in found) if c]
+    fams = list(families)
+    taken = {f.key for f in fams} | {"a", "d"}
+    for c in new:
+        if all(f.name != c.family for f in fams):
+            fams.append(Family(provider, c.family, _free_key(c.family, taken)))
+            taken.add(fams[-1].key)
+    if provider == "codex":                                      # GPT-6.1 above GPT-6 above GPT-5.6
+        fams.sort(key=lambda f: _num(f.name[4:]) or (0, 0), reverse=True)
+    out: list[ModelChoice] = []
+    for fam in fams:
+        pending = [c for c in new if c.family == fam.name]
+        if provider == "claude":
+            pending.sort(key=_vkey, reverse=True)
+        for m in (m for m in models if m.family == fam.name):
+            key = _vkey(m) if provider == "claude" else None
+            while pending and key is not None and _vkey(pending[0]) > key:
+                out.append(pending.pop(0))
+            out.append(m)
+        out.extend(pending)
+    return fams, out
+
+
+def catalogue(provider: str) -> tuple[list[Family], list[ModelChoice]]:
+    """The lists above plus what `discover_models` found, newest first inside each family."""
+    base = (CODEX_FAMILIES, CODEX_MODELS) if provider == "codex" else (CLAUDE_FAMILIES, CLAUDE_MODELS)
+    found = _FOUND.get(provider, ())
+    if not found:
+        return base
+    hit = _MERGED.get(provider)
+    if hit is None or hit[0] != found:
+        hit = (found, _merge(provider, base[0], base[1], found))
+        _MERGED[provider] = hit
+    return hit[1]
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def discover_models(claude_home: str | Path, codex_home: str | Path,
+                    usage: Optional[dict[str, dict[str, float]]] = None) -> dict[str, tuple[str, ...]]:
+    """Add to `catalogue()` every model id this machine knows that the lists above lack (see the
+    comment above `_CLAUDE_ID`); returns what was added. `usage` is `read_usage`'s answer."""
+    ids: dict[str, set[str]] = {"claude": set(), "codex": set()}
+    for provider in ids:
+        ids[provider].update((usage or {}).get(provider, {}))
+    for path in (Path(claude_home).parent / ".claude.json", Path(claude_home) / ".claude.json"):
+        for option in _read_json(path).get("additionalModelOptionsCache") or []:
+            if isinstance(option, dict) and isinstance(option.get("value"), str):
+                ids["claude"].add(option["value"])
+    for entry in _read_json(Path(codex_home) / "models_cache.json").get("models") or []:
+        if isinstance(entry, dict) and entry.get("visibility") == "list" and isinstance(entry.get("slug"), str):
+            ids["codex"].add(entry["slug"])
+    for provider, found in ids.items():
+        static = {m.value for m in (CODEX_MODELS if provider == "codex" else CLAUDE_MODELS)}
+        _FOUND[provider] = tuple(sorted(i for i in found if i not in static and _parse_new(i, provider)))
+    return dict(_FOUND)
 
 
 def all_values(provider: str) -> list[str]:
@@ -141,14 +281,19 @@ def resolve(raw: Optional[str], provider: str = "claude", big_context: bool = Fa
     low = text.lower()
     one_m = big_context or "[1m]" in low or "1m context" in low or "1m-token" in low
     base = low.replace("[1m]", "")
-    if base in CLAUDE_ALIASES:
-        base = CLAUDE_ALIASES[base].replace("[1m]", "")
+    models = catalogue("claude")[1]
+    word = _ALIAS_FAMILY.get(base, base)
+    newest = next((m.value for m in models if m.family.lower() == word and not m.note and _vkey(m)), None)
+    if newest:
+        base = newest
+    elif base in CLAUDE_ALIASES:
+        base = CLAUDE_ALIASES[base]
     if base not in values:
         match = _DISPLAY.search(low)
         if not match:
             return None
         family, version = match.group(1).capitalize(), match.group(2)
-        found = next((m.value for m in CLAUDE_MODELS
+        found = next((m.value for m in models
                       if m.family == family and m.version == version and not m.note), None)
         if found is None:
             return None
@@ -169,6 +314,11 @@ def family_of(value: Optional[str], provider: str = "claude") -> Optional[str]:
 # --------------------------------------------------------------------------- reading the logs
 
 _MODEL_BYTES = re.compile(rb'"model"\s*:\s*"([^"]{1,80})"')
+
+
+def _known(raw: Optional[str], provider: str) -> Optional[str]:
+    """`resolve`, or the raw id itself when it is a model id the lists above do not carry yet."""
+    return resolve(raw, provider) or (raw if _parse_new(raw, provider) else None)
 
 
 def _note(usage: dict[str, float], value: Optional[str], when: float) -> None:
@@ -225,7 +375,8 @@ def _read_statusline(folder: Path, cutoff: float, usage: dict[str, float]) -> No
         model = data.get("model") or {}
         size = ((data.get("context_window") or {}).get("context_window_size") or 0)
         value = resolve(model.get("id") or model.get("display_name"), "claude",
-                        big_context=isinstance(size, (int, float)) and size >= 1_000_000)
+                        big_context=isinstance(size, (int, float)) and size >= 1_000_000) \
+            or _known(model.get("id"), "claude")
         _note(usage, value, st.st_mtime)
 
 
@@ -260,7 +411,7 @@ def _read_events(path: Path, cutoff: float, usage: dict[str, dict[str, float]]) 
         message = event.get("message") or ""
         if not picked and event.get("event") == "control" and message.startswith("/model "):
             picked = message[len("/model "):].strip()
-        _note(usage[provider], resolve(picked, provider), when)
+        _note(usage[provider], _known(picked, provider), when)
 
 
 def read_usage(claude_home: str | Path, codex_home: str | Path, state_dir: str | Path,
@@ -275,12 +426,12 @@ def read_usage(claude_home: str | Path, codex_home: str | Path, state_dir: str |
     claude_files = Path(claude_home, "projects").glob("*/*.jsonl")
     for ident, when in _scan_files(claude_files, cutoff, cache.setdefault("claude", {}),
                                    lambda i: i.startswith("claude-")).items():
-        _note(usage["claude"], resolve(ident, "claude"), when)
+        _note(usage["claude"], _known(ident, "claude"), when)
 
     codex_values = set(all_values("codex"))
     codex_files = Path(codex_home, "sessions").glob("**/*.jsonl")
     for ident, when in _scan_files(codex_files, cutoff, cache.setdefault("codex", {}),
-                                   lambda i: i in codex_values).items():
+                                   lambda i: i in codex_values or _parse_new(i, "codex")).items():
         _note(usage["codex"], ident, when)
 
     state = Path(state_dir)
@@ -290,6 +441,7 @@ def read_usage(claude_home: str | Path, codex_home: str | Path, state_dir: str |
 
 
 _MEMO: dict[str, tuple[float, dict]] = {}
+_CACHE_VERSION = 2      # 2: the Codex scan keeps every `gpt-*` id, not only the listed ones
 
 
 def load_usage(cfg) -> dict[str, dict[str, float]]:
@@ -301,11 +453,12 @@ def load_usage(cfg) -> dict[str, dict[str, float]]:
     cache_file = Path(cfg.state_dir) / "model_usage_cache.json"
     try:
         cache = json.loads(cache_file.read_text(encoding="utf-8"))
-        if not isinstance(cache, dict):
-            cache = {}
+        if not isinstance(cache, dict) or cache.get("v") != _CACHE_VERSION:
+            cache = {"v": _CACHE_VERSION}
     except (OSError, ValueError):
-        cache = {}
+        cache = {"v": _CACHE_VERSION}
     usage = read_usage(cfg.claude_home, cfg.codex_home, cfg.state_dir, cache=cache)
+    discover_models(cfg.claude_home, cfg.codex_home, usage)
     try:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(cache), encoding="utf-8")
@@ -362,7 +515,9 @@ def version_label(m: ModelChoice) -> str:
 
 # --------------------------------------------------------------------------- the two screens
 
-def family_options(provider: str, usage: dict[str, float], current: Optional[str], now: float):
+def family_options(provider: str, usage: dict[str, float], current: Optional[str], now: float,
+                   default_detail: Optional[str] = None):
+    """`default_detail` says what `default` stands for; the generic `DEFAULT_DETAIL` wording when not given."""
     from .widgets.modal import PickOption
 
     options = []
@@ -374,7 +529,8 @@ def family_options(provider: str, usage: dict[str, float], current: Optional[str
         if hidden:
             bits.append(f"{hidden} more under show all")
         options.append(PickOption(fam.key, FAMILY_PREFIX + fam.name, fam.name, "  ".join(bits)))
-    options.append(PickOption("d", "default", "default", DEFAULT_DETAIL.get(provider, "")))
+    options.append(PickOption("d", "default", "default",
+                              default_detail or DEFAULT_DETAIL.get(provider, "")))
     return options
 
 
@@ -400,10 +556,11 @@ def version_options(provider: str, family: str, usage: dict[str, float], current
 
 def open_picker(app, provider: str, heading: str, current: Optional[str],
                 on_done: Callable[[Optional[str]], None], cfg=None,
-                usage: Optional[dict[str, float]] = None, now: Optional[float] = None) -> None:
+                usage: Optional[dict[str, float]] = None, now: Optional[float] = None,
+                default_detail: Optional[str] = None) -> None:
     """Push the family screen; the version screen follows. `on_done(value)` gets the chosen
     value, `"default"`, or `None` when Escape left the family screen. `heading` is the start of
-    both titles (`model for habit_notes`, `pick a model`)."""
+    both titles (`model for garden_notes`, `pick a model`). `default_detail`: what `default` is."""
     from .widgets.modal import Pick
 
     if usage is None:
@@ -415,7 +572,7 @@ def open_picker(app, provider: str, heading: str, current: Optional[str],
     def families() -> None:
         app.push_screen(
             Pick(f"{heading} · family first  (Esc = back)",
-                 family_options(provider, usage, current, now), current=family_current),
+                 family_options(provider, usage, current, now, default_detail), current=family_current),
             family_picked)
 
     def family_picked(value: Optional[str]) -> None:

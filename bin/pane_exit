@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# pane_exit -- record that the program in a tmux pane ended, and with which exit code
+#. Typed after every Claude Code launch as
+#   claude ... ; "<pantheon root>/bin/pane_exit" $?
+# so it runs whether or not Claude Code's own SessionEnd hook fired. Appends ONE JSON line to
+# state/agents/events.jsonl, the same file the hooks write:
+#   {"ts":"<UTC>Z","source":"pantheon","event":"PaneExit","code":N,"tmux_pane":"%3"}
+# Never prints and always exits 0: it runs in the user's pane, so a failure here must stay silent.
+{
+  HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  STATE="${PANTHEON_STATE_DIR:-$HERE/state}"
+  DIR="$STATE/agents"
+  code="${1:-}"
+  case "$code" in
+    ''|*[!0-9-]*|-|*?-*) code=null ;;
+  esac
+  # A pane id is `%` plus digits; drop anything else so the line is always valid JSON.
+  pane="${TMUX_PANE//[^%0-9]/}"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+  mkdir -p "$DIR"
+  printf '{"ts":"%s","source":"pantheon","event":"PaneExit","code":%s,"tmux_pane":"%s"}\n' \
+    "$ts" "$code" "$pane" >>"$DIR/events.jsonl"
+} </dev/null >/dev/null 2>&1
+exit 0

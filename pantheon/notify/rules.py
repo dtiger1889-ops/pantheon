@@ -250,7 +250,7 @@ _BUDGET_WINDOWS = (("five_hour", "5-hour"), ("seven_day", "weekly"))
 
 
 def _band(pct: Optional[float]) -> Optional[int]:
-    """Which qualitative band a percentage sits in, S-UX R3's 70/90 lines: `None` under 70 (no
+    """Which qualitative band a percentage sits in, 's 70/90 lines: `None` under 70 (no
     band, nothing to notify), `90` from 70 up to 100, `100` at or past it."""
     if pct is None:
         return None

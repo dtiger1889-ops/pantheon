@@ -154,6 +154,56 @@ class Notify:
 
 
 @dataclass(frozen=True)
+class Health:
+    """stability settings; `Config.health_settings()` merges
+    `[health]` in pantheon.toml over these defaults (same pattern as `Notify`). The freeze watcher
+    (`pantheon/health/watch.py`) reads all of it; `command_log` is the tmux command log (step 2).
+    `enabled = false` turns the watcher off entirely. Handle counts are Windows handles on the
+    tmux server process; `handle_exe` and `procdump_exe` are full paths to Sysinternals tools,
+    "" = not used. Alerts go only where `alerts` names: "deck", "toast", "ntfy" (never Telegram)."""
+
+    enabled: bool = True
+    probe_seconds: int = 30
+    freeze_after_misses: int = 3
+    capture_seconds: int = 60
+    auto_restart: bool = True
+    storm_minutes: int = 60
+    snapshot_seconds: int = 300
+    sample_seconds: int = 60
+    warn_handles: int = 10000
+    low_commit_percent: int = 90
+    planned_restart: bool = True
+    planned_restart_handles: int = 20000
+    planned_idle_minutes: int = 10
+    handle_exe: str = ""
+    procdump_exe: str = ""
+    command_log: bool = True
+    alerts: list[str] = field(default_factory=lambda: ["deck", "toast", "ntfy"])
+    # A pane with no session in it (a bare shell with nothing running under it, or a dead pane)
+    # whose screen has not changed for this many minutes is closed; 0 = never.
+    close_empty_minutes: int = 5
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Health":
+        known = set(cls.__dataclass_fields__)
+        kwargs = {k: v for k, v in (data or {}).items() if k in known}
+        for key in ("enabled", "auto_restart", "planned_restart", "command_log"):
+            if key in kwargs:
+                value = kwargs[key]
+                kwargs[key] = not (
+                    value is False or str(value).strip().lower() in ("false", "off", "no", "0"))
+        if "alerts" in kwargs:
+            raw = kwargs["alerts"]
+            if isinstance(raw, str):
+                raw = [raw]
+            kwargs["alerts"] = [str(a).strip().lower() for a in (raw or []) if str(a).strip()]
+        for key in ("handle_exe", "procdump_exe"):
+            if key in kwargs:
+                kwargs[key] = str(kwargs[key] or "").strip()
+        return cls(**kwargs)
+
+
+@dataclass(frozen=True)
 class Appearance:
     """`[appearance]` in pantheon.toml. `Config.appearance`
     keeps the raw TOML dict (same pattern as `Governor`/`Config.governor`);
@@ -236,8 +286,11 @@ class NewSession:
     value here means the launcher applies it right after the session opens (`pane.py`
     `_apply_launch_options`, the same path the row toolbar's `m`/`e` actions use)."""
 
-    model: str = "default"
-    effort: str = "high"
+    # the user, 2026-10-06: "I want it to be opus 5.5 1m context medium". Passed as start flags,
+    # so a `/model` typed into another session (which Claude Code saves as its own default)
+    # never changes what a new Pantheon session gets.
+    model: str = "claude-opus-5-5[1m]"
+    effort: str = "medium"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "NewSession":
@@ -404,10 +457,11 @@ class Config:
     )
     governor: dict[str, Any] = field(default_factory=dict)  # owns the keys
     notify: dict[str, Any] = field(default_factory=dict)  # owns the keys
+    health: dict[str, Any] = field(default_factory=dict)  # owns the keys; `[health]`
     appearance: dict[str, Any] = field(default_factory=dict)  # owns the keys
     theme: dict[str, Any] = field(default_factory=dict)  # owns the keys ([theme] palette preset + overrides)
     standalone: dict[str, Any] = field(default_factory=dict)  # owns the keys
-    new_session: dict[str, Any] = field(default_factory=dict)  # owns the keys; `[new_session]`
+    new_session: dict[str, Any] = field(default_factory=dict)  # follow-up owns the keys; `[new_session]`
     keys: dict[str, Any] = field(default_factory=dict)  # owns the keys; `[keys]`
     tools: Tools = field(default_factory=Tools)
     tools_page: dict[str, Any] = field(default_factory=dict)  # owns the keys; `[tools_page]`
@@ -420,6 +474,8 @@ class Config:
                                                               # assistant_settings
     sessions: dict[str, Any] = field(default_factory=dict)  # `[sessions]`; read only through
                                                              # sessions_settings()
+    health: dict[str, Any] = field(default_factory=dict)  # `[health]`; read only through
+                                                           # health_settings()
     state_dir: str = str(STATE_DIR)
 
     def __post_init__(self) -> None:
@@ -494,6 +550,11 @@ class Config:
         in -- same pattern as `governor_settings`."""
         return Notify.from_dict(self.notify)
 
+    def health_settings(self) -> Health:
+        """`self.health` (the raw `[health]` TOML dict) as a typed `Health` with every
+        default filled in -- same pattern as `notify_settings()`."""
+        return Health.from_dict(self.health)
+
     def appearance_settings(self) -> Appearance:
         """`self.appearance` (the raw TOML dict) as a typed `Appearance` with every default
         filled in -- same pattern as `governor_settings`."""
@@ -530,10 +591,17 @@ class Config:
 
     def assistant_settings(self) -> Assistant:
         """`self.assistant` (the raw `[assistant]` TOML dict) as a typed `Assistant`, with the
-        empty folder resolved to the workspace root."""
+        empty folder resolved to the workspace root.
+
+        `PANTHEON_ASSISTANT=off` (also false/no/0) in the environment turns the Assistant off
+        whatever pantheon.toml says; any other value leaves the file in charge. The throwaway
+        decks of the launcher test lane and the double-restart script set it, because their
+        Assistant was a real Claude that outlived its server (2026-10-05)."""
         settings = Assistant.from_dict(self.assistant)
         if not settings.folder:
             settings = dataclasses.replace(settings, folder=self.projects_root)
+        if os.environ.get("PANTHEON_ASSISTANT", "").strip().lower() in ("off", "false", "no", "0"):
+            settings = dataclasses.replace(settings, enabled=False)
         return settings
 
     def sessions_settings(self) -> Sessions:
@@ -577,6 +645,12 @@ def _with_env_overrides(cfg: Config) -> Config:
     state_dir = os.environ.get("PANTHEON_STATE_DIR", "").strip()
     if state_dir:
         cfg = dataclasses.replace(cfg, state_dir=state_dir)
+    # `PANTHEON_SESSION` beats the file's session name, as it already did in bin/pantheon. Without
+    # it here, a throwaway deck read "pantheon" from pantheon.toml, tmux matched that as a prefix of
+    # its own session, and it started a real Assistant Claude.
+    session = os.environ.get("PANTHEON_SESSION", "").strip()
+    if session:
+        cfg = dataclasses.replace(cfg, tmux_session=session)
     return cfg
 
 

@@ -83,6 +83,16 @@ def spelling_by_folder(events: Iterable[Event]) -> dict[str, str]:
     return out
 
 
+def _hidden_folder(cfg, folder: str) -> bool:
+    settings = getattr(cfg, "sessions_settings", None)
+    if settings is None:
+        return False
+    try:
+        return settings().hides(folder)
+    except Exception:
+        return False
+
+
 def list_projects(cfg, events: Iterable[Event] = ()) -> list[Project]:
     """Every project folder under `projects_root`, every `pinned_projects` folder, plus every
     folder the log has seen used."""
@@ -124,6 +134,11 @@ def list_projects(cfg, events: Iterable[Event] = ()) -> list[Project]:
         # repo, an AGENTS.md): the log also records shells opened in the home folder, the
         # workspace root, Temp and system32, none of which are projects.
         if not folder.is_dir() or key == root_key or not _is_project(folder):
+            continue
+        # A throwaway copy (`[sessions] hide_folders`, Temp by default) is not a project: a test
+        # run's `Temp/.../garden_notes` listed beside the real one, three `garden_notes` lines in the
+        # picker and a sidebar heading that pointed at the copy (2026-10-06).
+        if _hidden_folder(cfg, str(folder)):
             continue
         seen[key] = Project(folder.name, _norm(str(folder)), when, 0.0)
     return list(seen.values())
@@ -260,6 +275,13 @@ def _resolve_project(cfg, name_or_path: str) -> str:
 
 
 def _cli_open(cfg, args) -> int:
+    message_file = getattr(args, "message_file", None)
+    if message_file:
+        try:
+            args.message = Path(message_file).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError as exc:
+            print(f"could not read the message file {message_file}: {exc}; nothing started")
+            return 2
     # `--preset NAME` fills in whatever was not typed; a typed flag always wins.
     chosen = {
         "project": args.project, "who": args.who, "model": getattr(args, "model", None),
@@ -293,6 +315,14 @@ def _cli_open(cfg, args) -> int:
     options = {k: chosen.get(k) for k in ("model", "effort", "mode")
                if chosen.get(k) and chosen.get(k) != "default"}
     resume = getattr(args, "resume", None)
+    if provider_name == "claude" and not resume:
+        # A fresh session started by command (the Assistant, a timed start) gets the same
+        # `[new_session]` model and effort as the deck's `n` picker, not the CLI's own default.
+        defaults = cfg.new_session_settings()
+        for key in ("model", "effort"):
+            value = getattr(defaults, key, "default")
+            if key not in options and value and value != "default":
+                options[key] = value
     if resume:
         options["resume"] = resume
     result = start_session(project_dir, cfg, provider, interactive, chosen.get("message") or None,
@@ -317,6 +347,9 @@ def build_parser(prog: str = "pantheon.dispatch.projects"):
                         help="reopen a Claude session in that folder: the newest, or the given id")
     open_p.add_argument("--message", default="",
                         help="the first message typed into it (required for codex-headless)")
+    open_p.add_argument("--message-file", default=None, metavar="PATH",
+                        help="read the first message from a file (a /spinoff brief); "
+                             "spares the caller shell-quoting a paragraph")
     open_p.add_argument("--model", default=None, help="model for the new session, e.g. sonnet")
     open_p.add_argument("--effort", default=None, help="effort for the new session, e.g. high")
     open_p.add_argument("--mode", default=None,

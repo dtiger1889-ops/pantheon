@@ -24,6 +24,7 @@ from textual.containers import Horizontal
 from textual.widgets import Static
 
 from .. import glyphs, theme
+from ..keepalive import KeepAlive
 from ..models import parse_ts
 from . import calc, sources
 from .app import (
@@ -176,7 +177,7 @@ def height_hint(picture: dict, width: int = DEFAULT_WIDTH) -> int:
     return count
 
 
-class HudStrip(Horizontal):
+class HudStrip(KeepAlive, Horizontal):
     """The strip embedded in the combined wide layout: one framed `ProviderCard` per provider in
     `state/hud.json`, plus a `NeedsYouCard` when there is room for it. Mounts, builds from
     whatever is on disk, and rebuilds every 30 seconds -- never anything faster or heavier than

@@ -88,6 +88,9 @@ class Launcher:
         # The throwaway deck's apps write their log and their events here, never into the live
         # deck's state folder.
         self.env["PANTHEON_STATE_DIR"] = str(self.state_dir)
+        # No Assistant on the throwaway deck: it is a real Claude, and one outlived its server
+        # (2026-10-05). `assistant_settings()` in pantheon/config.py honours this.
+        self.env["PANTHEON_ASSISTANT"] = "off"
         self._runs = 0
         # The outer server exists only to give attached clients a real terminal: a tmux client
         # needs a tty, so each "client" is a pane on a second, unrelated server running
@@ -166,7 +169,8 @@ class Launcher:
         """Attach one more real client by running `bin/pantheon` (no arguments) in a pane."""
         self._clients += 1
         command = (
-            f'unset TMUX; export TMUX_TMPDIR="{self.tmpdir}" PANTHEON_SESSION="{SESSION}"; '
+            f'unset TMUX; export TMUX_TMPDIR="{self.tmpdir}" PANTHEON_SESSION="{SESSION}" '
+            f'PANTHEON_ASSISTANT=off; '
             f'exec "{LAUNCHER}"'
         )
         args = ["-S", self.outer_socket]
@@ -322,6 +326,89 @@ def test_window_names_are_uppercase_role_labels_not_program_paths(started):
     assert not any("python" in n.lower() or "\\" in n or "/" in n for n in names)
 
 
+def _press_on_client(started, *keys: str) -> None:
+    """Type into the attached client's own terminal (the outer server's pane), so the inner tmux
+    reads the keys the way it reads a real keyboard -- root-table bindings included, which a
+    `send-keys` on the inner server would bypass."""
+    subprocess.run([TMUX, "-S", started.outer_socket, "send-keys", "-t", "clients:c1", *keys],
+                   env=started.env, capture_output=True, timeout=30)
+
+
+def _client_on_agent(started) -> str:
+    started.tmux("new-window", "-d", "-t", f"{SESSION}:3", "-n", "agent", "sleep 600")
+    started.attach_client()
+    tty, session, _ = started.clients()[0]
+    started.tmux("switch-client", "-c", tty, "-t", f"{session}:3")
+    wait_until(lambda: started.where_clients_are().get(tty) == 3, "the client never reached window 3")
+    return tty
+
+
+def _outer_screen(started) -> str:
+    cp = subprocess.run([TMUX, "-S", started.outer_socket, "capture-pane", "-p", "-t", "clients:c1"],
+                        env=started.env, capture_output=True, text=True, timeout=30)
+    return cp.stdout
+
+
+def test_f8_closes_an_agent_window_after_y(started):
+    """the user 2026-10-08: a kill-window key in the bottom bar beside F1-F3. F8, then y."""
+    _client_on_agent(started)
+    wait_until(lambda: "F8 close window" in _outer_screen(started),
+               "the status line on an agent window never showed the F8 label")
+    _press_on_client(started, "F8")
+    wait_until(lambda: "close agent?" in _outer_screen(started), "F8 never asked y/n")
+    _press_on_client(started, "y")
+    wait_until(lambda: 3 not in {i for i, _, _ in started.windows()}, "y did not close the agent window")
+    assert {"DECK", "QUEUE", "BUDGET"} <= {name for _, name, _ in started.windows()}
+
+
+def test_f8_then_n_keeps_the_agent_window(started):
+    _client_on_agent(started)
+    _press_on_client(started, "F8")
+    wait_until(lambda: "close agent?" in _outer_screen(started), "F8 never asked y/n")
+    _press_on_client(started, "n")
+    time.sleep(1.0)
+    assert 3 in {i for i, _, _ in started.windows()}, "n closed the agent window anyway"
+
+
+def test_f8_on_the_deck_closes_nothing_and_shows_no_label(started):
+    started.attach_client()
+    tty, session, _ = started.clients()[0]
+    wait_until(lambda: "PANTHEON" in started.capture(f"{session}:0"), "the deck never drew")
+    assert "F8 close window" not in _outer_screen(started), "the deck window offered F8"
+    before = {i for i, _, _ in started.windows()}
+    _press_on_client(started, "F8")
+    wait_until(lambda: "own q" in _outer_screen(started), "F8 on the deck never said why it did nothing")
+    assert "(y/n)" not in _outer_screen(started), "F8 asked to close the deck"
+    assert {i for i, _, _ in started.windows()} == before, "F8 closed a window on the deck"
+    assert not started.pane_dead(f"{session}:0")
+
+
+def test_the_deck_starts_the_tmux_feed_and_it_reads_agent_screens(started):
+    """2026-10-08 lag fix: the deck's helper (pantheon/tmuxfeed.py) writes a fresh feed with every
+    window and each agent window's screen, so the deck itself stops calling tmux each tick."""
+    import json
+
+    started.tmux("new-window", "-d", "-t", f"{SESSION}:3", "-n", "agent", "echo feed-probe-text; sleep 600")
+    feed = started.state_dir / "tmux-feed.json"
+
+    def fresh():
+        try:
+            data = json.loads(feed.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if time.time() - data.get("at", 0) > 8:
+            return None
+        names = {w["name"] for w in data["windows"]}
+        texts = " ".join(c["text"] for c in data["captures"].values())
+        return data if {"DECK", "agent"} <= names and "feed-probe-text" in texts else None
+
+    data = wait_until(fresh, "the deck never wrote a fresh tmux feed with the agent's screen", timeout=90)
+    pid = int((started.state_dir / "tmux-feed.pid").read_text().strip())
+    assert pid == data["pid"]
+    assert not any(c["text"] and "PANTHEON" in c["text"] for c in data["captures"].values()), \
+        "the deck's own window was read into the feed"
+
+
 def test_restart_keeps_agent_windows_and_respawns_the_deck(started):
     started.tmux("new-window", "-d", "-t", f"{SESSION}:3", "-n", "agent", "sleep 600")
     before = {index: pane for index, _, pane in started.windows()}
@@ -338,7 +425,11 @@ def test_restart_all_removes_everything_then_starts_fresh(started):
     started.tmux("new-window", "-d", "-t", f"{SESSION}:3", "-n", "agent", "sleep 600")
     before = {index: pid for index, _, pid in started.windows()}
     started.run("--restart", "--all")
-    wait_until(lambda: len(started.windows()) >= 3, "the deck never came back after --restart --all")
+    # the restart now finishes in a detached process, so the old windows are still there
+    # for a moment after the launcher returns -- wait for the fresh set, not just any three.
+    wait_until(lambda: (lambda w: len(w) >= 3 and 3 not in {i for i, _, _ in w}
+                        and all(x[2] != before.get(x[0]) for x in w))(started.windows()),
+               "the deck never came back after --restart --all")
     after = {index: (name, pid) for index, name, pid in started.windows()}
     assert 3 not in after, "the agent window survived --restart --all"
     assert [(index, name) for index, (name, _) in sorted(after.items())] == [

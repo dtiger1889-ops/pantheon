@@ -569,6 +569,25 @@ def test_the_assistant_starts_with_the_shared_dispatch_memory(tmp_path, monkeypa
     assert "autoMemoryDirectory" in cmd and memory.as_posix() in cmd   # one store, not two
 
 
+def test_the_assistant_launch_line_ends_with_the_exit_recorder(tmp_path, monkeypatch):
+    """the Assistant goes through the same Claude launch, so its typed line also ends
+    by recording the pane's exit code."""
+    from pantheon.providers.claude import ClaudeProvider, exit_suffix
+
+    typed = []
+    monkeypatch.setattr(tmuxctl, "new_window", lambda *a, **kw: 9)
+    monkeypatch.setattr(tmuxctl, "send_text", lambda t, text, **kw: typed.append(text) or True)
+    monkeypatch.setattr(tmuxctl, "wait_for_command", lambda *a, **kw: True)
+    monkeypatch.setattr(tmuxctl, "capture", lambda *a, **kw: "> ")
+    monkeypatch.setattr(tmuxctl, "pane_id", lambda *a, **kw: "%9")
+    cfg = make_cfg(tmp_path, memory="off")
+    result = assistant_mod._start(ClaudeProvider(cfg, sleep=no_sleep), ROOT, "abc-1",
+                                  cfg.assistant_settings(), state_dir=cfg.state_dir)
+    assert result.ok
+    assert typed[1].startswith("claude --resume abc-1") and typed[1].endswith(exit_suffix())
+    assert exit_suffix().endswith('/bin/pane_exit" $?')
+
+
 def test_memory_off_means_no_shared_memory(tmp_path, monkeypatch):
     fake = FakeTmux()
     install(monkeypatch, fake)
@@ -586,3 +605,18 @@ def test_memory_is_found_in_the_store_apps_redirected_folder_first(tmp_path, mon
     monkeypatch.setattr(assistant_mod, "DISPATCH_SESSION_ROOTS", [packaged, tmp_path / "plain-appdata"])
     settings = config_mod.Config().assistant_settings()
     assert assistant_mod.memory_dir(settings) == packaged / "org" / "acct" / "agent" / "memory"
+
+
+def test_learn_writes_a_windows_transcript_path_once_not_every_tick(tmp_path, monkeypatch, caplog):
+    """The hook records `C:\\...` and the record keeps `C:/...`; comparing the two raw rewrote the
+    record and logged "the Assistant's conversation is" every 5 seconds (32,000 lines, 2026-10-07)."""
+    import logging
+    cfg = make_cfg(tmp_path)
+    assistant_mod.write_state(cfg, {"pane_id": "%8", "started_at": "2026-10-07T00:00:00Z"})
+    session_start(cfg, "conv-w", "%8", transcript="C:\\Users\\x\\.claude\\projects\\x\\conv-w.jsonl")
+    with caplog.at_level(logging.INFO, logger="pantheon.assistant"):
+        assert assistant_mod.learn(cfg) == "conv-w"
+        assert assistant_mod.learn(cfg) == "conv-w"
+        assert assistant_mod.learn(cfg) == "conv-w"
+    assert assistant_mod.read_state(cfg)["transcript_path"] == "C:/Users/x/.claude/projects/x/conv-w.jsonl"
+    assert sum("conversation is" in r.getMessage() for r in caplog.records) == 1

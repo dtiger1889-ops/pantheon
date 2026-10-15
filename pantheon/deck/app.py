@@ -44,7 +44,10 @@ from .. import assistant as assistant_mod
 from .. import config as config_mod
 from .. import connectors as connectors_mod
 from .. import orphan as orphan_mod
+from ..keepalive import KeepAlive
 from .. import restart as restart_mod
+from .. import fullrestart as fullrestart_mod
+from ..health import status as health_status_mod
 from ..widgets.footer import PhoneFooter, fit_footer, make_footer
 from .. import keys as keys_mod
 from .. import theme as theme_mod
@@ -56,7 +59,9 @@ from ..notify import presence as presence_mod
 from ..pit import tmux_pit
 from .. import stage as stage_mod
 from .. import editor as editor_mod
+from .. import editor_bridge as editor_bridge_mod
 from .. import tmuxctl
+from .. import tmuxfeed
 from ..dispatch import projects as projects_mod
 from ..queue.pane import QueuePane
 from ..session_view import models as session_models
@@ -154,7 +159,13 @@ def _pct_segment(name: str, pct: Optional[float], dim: str) -> Text:
     return seg
 
 
-class DeckApp(App):
+# how often the deck looks for a full restart's result file.
+RESTART_RESULT_POLL_S = 3.0
+# How often the deck makes sure its tmux feed helper is running (pantheon/tmuxfeed.py).
+FEED_CHECK_S = 30.0
+
+
+class DeckApp(KeepAlive, App):
     """`python -m pantheon.deck` runs this in tmux window 0."""
 
     CSS = """
@@ -228,6 +239,10 @@ class DeckApp(App):
         # capital `E` from anywhere in the deck (lower-case `e` is the agents table's effort
         # key; in the SESSIONS list `e` itself opens the editor).
         Binding("E", "edit_file", "edit a file", show=False),
+        # capital `V` opens the highlighted session's folder (or the task list's note)
+        # in VS Code on the desk, through the Scheduled Task the user registers once
+        # (one-time setup). Lower-case `v` is the table's view-request key.
+        Binding("V", "open_in_vscode", "open in VS Code", show=False),
         # capital `A` puts the pinned Assistant on screen (starting it first when it is not
         # running). No priority, same as `R`: a type-to-agent box must still take a capital A.
         Binding("A", "assistant", "assistant", show=False),
@@ -252,7 +267,11 @@ class DeckApp(App):
         # `list-windows` only reports a window's ACTIVE pane, so a session staged beside the
         # deck would drop out of every list the moment the keyboard is back on the sidebar;
         # `stage.with_staged` adds it back as window 0 (no tmux call when nothing is staged).
-        base_windows = window_source or (lambda: tmuxctl.list_windows_cached(None))
+        # 2026-10-08: read from the tmux feed (`pantheon/tmuxfeed.py`) while it is fresh, so the
+        # deck's drawing thread stops spawning tmux every tick; the live call stays as fallback.
+        self._feed_owner = window_source is None
+        base_windows = window_source or (lambda: tmuxfeed.windows_or_live(
+            self.cfg, lambda: tmuxctl.list_windows_cached(None)))
         windows = lambda: stage_mod.with_staged(list(base_windows() or []), self.cfg)
         self.sup = SupervisorPane(self.cfg, window_source=windows, id="supervisor")
         # the switcher rail reuses the supervisor pane's own already-folded rows
@@ -334,6 +353,17 @@ class DeckApp(App):
         self.set_interval(HEADER_REFRESH_S, self._refresh_header)
         self.set_interval(PRESENCE_TOUCH_SECONDS, self._touch_presence_if_focused)
         orphan_mod.install(self)     # leave when the tmux server is gone (pantheon/orphan.py)
+        # The tmux feed helper: started here, re-checked every half minute (a pid-file read, no
+        # fork) so a helper that left with the previous deck is replaced. Only a deck inside tmux
+        # that reads real windows owns one (a test or a render hands in its own window source).
+        if self._feed_owner and tmuxctl.in_tmux():
+            self._ensure_feed()
+            self.set_interval(FEED_CHECK_S, self._ensure_feed)
+        # a full restart reopens the saved sessions AFTER this deck is up, then writes what
+        # came back to state/restart_result.json -- watch for it and say so, naming (with its id)
+        # every session that did not come back.
+        self._restart_result_since = self._restart_result_mtime() or 0.0
+        self.set_interval(RESTART_RESULT_POLL_S, self._check_restart_result)
         self._focus_default()
         # the pinned Assistant comes back whenever the deck starts -- after `R`, after
         # `pantheon --restart --all`, after a tmux server death -- resuming the same conversation.
@@ -617,6 +647,40 @@ class DeckApp(App):
             right.append(" · usage read " + format_clock(when, self.cfg), style=dim)
         self.query_one("#deck-status-right", Static).update(right)
 
+    def _ensure_feed(self) -> None:
+        try:
+            tmuxfeed.ensure_running(self.cfg)
+        except Exception as exc:   # the feed is a speed-up; the deck falls back to live calls
+            log.warning("tmux feed check failed: %r", exc)
+
+    def _restart_result_mtime(self) -> Optional[float]:
+        try:
+            return fullrestart_mod.result_path(self.cfg).stat().st_mtime
+        except OSError:
+            return None
+
+    def _check_health(self) -> None:
+        """the freeze watcher's health line (state/health.json), only for warn or bad and
+        only when it changes -- silent when healthy."""
+        message, level = health_status_mod.health_message(self.cfg)
+        if message == getattr(self, "_health_shown", ""):
+            return
+        self._health_shown = message
+        if message:
+            self._say(message, "error" if level == "bad" else "warning")
+
+    def _check_restart_result(self) -> None:
+        """show a full restart's outcome once, when its result file is newer than this deck.
+        the health line is read on the same timer, just before it."""
+        self._check_health()
+        mtime = self._restart_result_mtime()
+        if mtime is None or mtime <= self._restart_result_since:
+            return
+        self._restart_result_since = mtime
+        message, warn = fullrestart_mod.result_message(fullrestart_mod.read_result(self.cfg))
+        if message:
+            self._say(message, "warning" if warn else None)
+
     def _say(self, message: str, tone: Optional[str] = None) -> None:
         self._message = message
         text = Text(message)
@@ -788,7 +852,8 @@ class DeckApp(App):
             return self._say("claude is not switched on in pantheon.toml", "warning")
         if not entry.cwd:
             return self._say("no folder is recorded for that conversation", "warning")
-        self._say(f"reopening {entry.title or entry.project} in {entry.project}...")
+        verb = "restarting the killed session" if getattr(entry, "killed_at", None) else "reopening"
+        self._say(f"{verb} {entry.title or entry.project} in {entry.project}...")
         self.run_worker(lambda: self._resume_worker(entry, provider), thread=True)
 
     def _resume_worker(self, entry, provider) -> None:
@@ -991,6 +1056,27 @@ class DeckApp(App):
                 return self._edit("", known_file=str(path))
         self._edit(self._edit_folder())
 
+    def action_open_in_vscode(self) -> None:
+        """`V`: the highlighted session's folder (or the task list's highlighted note) in VS Code
+        on the desk. Never waits for VS Code; the status line says what happened in plain words."""
+        target = ""
+        if self.queue.display and self._focus_is_in(self.queue):
+            row = self.queue.selected_row()
+            path = getattr(row, "path", None) if row is not None else None
+            if path and Path(path).is_file():
+                target = str(path)
+        target = target or self._edit_folder()
+        self.run_worker(lambda: self._vscode_worker(target), thread=True)
+
+    def _vscode_worker(self, target: str) -> None:
+        try:
+            result = editor_bridge_mod.request_open(self.cfg.editor, self.cfg.state_dir, target)
+        except Exception:
+            log.exception("opening in VS Code failed")
+            result = {"ok": False, "message": f"could not open VS Code; details are in {self.cfg.log_file}"}
+        self.call_from_thread(self._say, result.get("message", ""),
+                              None if result.get("ok") else "warning")
+
     def _edit_folder(self) -> str:
         if self.rail.display:
             entry = self.rail.selected()
@@ -1087,7 +1173,7 @@ class DeckApp(App):
         break them back out) -- real tmux terminals, not a widget.
         Runs in a thread: it is several tmux subprocess calls, same reasoning as `n`'s launch."""
         if self._mode == PHONE and not tmux_pit.is_active(self.cfg):
-            # acceptance 5 / S-UX R1: too narrow to tile side by side is too narrow to enter
+            # acceptance 5 / : too narrow to tile side by side is too narrow to enter
             # at all -- leaving is always allowed (a window that got narrow after entering must
             # still be able to get back out).
             return self._say("the pit needs desk width (120+ columns) to tile side by side", "warning")
@@ -1165,6 +1251,9 @@ class DeckApp(App):
         panel = self.query_one("#deck-keys", VerticalScroll)
         if panel.display:
             return self.action_close_keys()
+        restart_mod.ask_quit(self, self._close_deck, self._say)
+
+    def _close_deck(self) -> None:
         # a staged session would be left alone in window 0 under the deck's name; put it
         # back in its own window first (on this thread: the deck is about to exit anyway).
         try:
@@ -1187,11 +1276,24 @@ def main() -> int:
         app.queue.message = f"vault folder not found at {cfg.sprints_dir}; fix it in pantheon.toml"
     try:
         app.run()
-    except Exception:
+    except Exception as exc:
+        if orphan_mod.terminal_gone(exc):
+            log.info("the deck's window was closed under it (a restart); leaving")
+            return 0
         log.exception("the deck stopped")
         print(f"the deck stopped; details are in {cfg.log_file}", file=sys.stderr)
         return 1
-    # `q` quits at once (no confirm); this line, shown above the launcher's own "press Enter to
+    # Textual catches an error raised inside the app, prints it to the window and returns
+    # normally; the window closes on Enter, so without this line the error is lost (2026-10-07).
+    crash = getattr(app, "_exception", None)
+    if crash is not None or (app.return_code or 0) != 0:
+        if crash is not None and orphan_mod.terminal_gone(crash):
+            log.info("the deck's window was closed under it (a restart); leaving")
+            return 0
+        log.error("the deck stopped on an error (code %s)", app.return_code, exc_info=crash)
+        print(f"the deck stopped; details are in {cfg.log_file}", file=sys.stderr)
+        return 1
+    # `q` asks first (restart.ask_quit); once closed, this line, shown above the launcher's own "press Enter to
     # close", is where it says what it quit.
     print(restart_mod.QUIT_NOTICE)
     return 0

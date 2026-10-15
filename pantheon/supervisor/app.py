@@ -141,7 +141,7 @@ class SupervisorApp(App):
     def action_quit_deck(self) -> None:
         if self.pane.keys_open:
             return self.pane.toggle_keys()
-        self.exit()
+        restart_mod.ask_quit(self, self.exit, self.pane.say)
 
 
 def main() -> int:

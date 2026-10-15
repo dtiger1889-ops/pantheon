@@ -35,6 +35,12 @@ def _tmux_is_never_real(request, monkeypatch):
         return
     monkeypatch.setattr(tmuxctl, "run", _no_tmux)
     tmuxctl._WINDOWS_CACHE.clear()
+    # A test that drives the real wrapper must not append to the project's state/tmux-commands.log;
+    # tests of the log point this at their own file.
+    monkeypatch.setattr(tmuxctl, "_command_log_path", None)
+    # Nor may a deck under test start the real tmux feed helper (pantheon/tmuxfeed.py).
+    from pantheon import tmuxfeed
+    monkeypatch.setattr(tmuxfeed, "ensure_running", lambda *a, **k: None)
     yield
     tmuxctl._WINDOWS_CACHE.clear()
 
@@ -67,6 +73,7 @@ def _model_usage_is_never_real(request, monkeypatch):
 
     monkeypatch.setattr(model_picker, "load_usage", lambda cfg: {"claude": {}, "codex": {}})
     model_picker._MEMO.clear()
+    monkeypatch.setattr(model_picker, "_FOUND", {"claude": (), "codex": ()})   # nor its new models
     yield
 
 

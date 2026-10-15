@@ -337,3 +337,28 @@ async def test_tab_walks_the_tabs_only_when_the_queue_is_the_whole_screen(tmp_pa
         await pilot.press("right_square_bracket")
         await pilot.pause()
         assert beside_another_pane.tab.name == "Decide"
+
+
+def test_queue_logging_adds_no_second_handler_for_a_file_already_logged_to(tmp_path):
+    """The deck sends the root logger to the log file before it builds this pane; a second
+    handler on 'pantheon' wrote every deck line twice (2026-10-05)."""
+    import logging
+    cfg = config_mod.Config(state_dir=str(tmp_path / "state"))
+    root, ours = logging.getLogger(), logging.getLogger("pantheon")
+    before_root, before_ours = list(root.handlers), list(ours.handlers)
+    Path(cfg.log_file).parent.mkdir(parents=True, exist_ok=True)
+    existing = logging.FileHandler(cfg.log_file, encoding="utf-8")
+    root.addHandler(existing)
+    try:
+        pane_mod.QueuePane(cfg, source=None, window_source=lambda: [])._setup_logging()
+        assert ours.handlers == before_ours
+        root.removeHandler(existing)
+        pane_mod.QueuePane(cfg, source=None, window_source=lambda: [])._setup_logging()
+        added = [h for h in ours.handlers if h not in before_ours]
+        assert len(added) == 1                     # on its own, the queue still logs
+        for h in added:
+            ours.removeHandler(h)
+            h.close()
+    finally:
+        existing.close()
+        root.handlers[:] = before_root

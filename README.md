@@ -84,13 +84,16 @@ To feed THE PIT and the Budget card, register these in `~/.claude/settings.json`
 bin/pantheon              # start or attach the deck
 bin/pantheon --keys       # list every key
 bin/pantheon --restart    # restart the deck windows; agent sessions keep running
+bin/pantheon --restart --all   # restart everything once every agent is between turns, then resume them
 ```
+
+A background watcher keeps an eye on the tmux server and closes any tmux pane with nothing running in it (an empty shell or a dead pane) after 5 minutes untouched. Set `close_empty_minutes` under `[health]` in `pantheon.toml`; 0 turns it off.
 
 Tests: `.venv/bin/python -m pytest -q`
 
 ## Known issues
 
-- The tmux server has frozen a few times under MSYS2 during window resizes and restarts. The cause isn't known yet.
+- The tmux server has frozen a few times under MSYS2 during window resizes and restarts. The cause isn't known yet; the watcher saves a diagnostic capture and restarts the server when it stops answering.
 - Codex's interactive screen doesn't run under MSYS2 ([openai/codex#6994](https://github.com/openai/codex/issues/6994)), so Codex runs headless or in a separate Windows Terminal window.
 - The limit governor, the planning card, answering permission prompts from the deck, and the assistant window are built but not yet tested in daily use. The governor ships switched off.
 - Handing a session off to the other agent depends on two helper scripts that aren't included yet, so that path reports it couldn't run.

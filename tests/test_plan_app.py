@@ -27,7 +27,7 @@ class FakeSource:
 
 
 ROWS = [
-    TaskRow(id="a", summary="write the S13 spec closeout", project="project_lanterns", est_context="small", agent=True),
+    TaskRow(id="a", summary="write the spec closeout", project="project_lanterns", est_context="small", agent=True),
     TaskRow(id="b", summary="vet a plugin", project="habit_notes", est_context="medium", agent=True),
     TaskRow(id="c", summary="rework the queue header", project="project_lanterns", est_context=None),
     TaskRow(id="d", summary="big refactor", project="loom-os", est_context="large"),

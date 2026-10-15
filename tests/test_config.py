@@ -220,8 +220,8 @@ def test_real_toml_has_a_standalone_block_and_stays_on_obsidian():
 
 def test_new_session_settings_default_when_the_toml_has_none():
     ns = config.Config().new_session_settings()
-    assert ns.model == "default"
-    assert ns.effort == "high"
+    assert ns.model == "claude-opus-5-5[1m]"   # the user, 2026-10-06: Opus 5.5, 1M context, medium
+    assert ns.effort == "medium"
 
 
 def test_new_session_settings_merges_the_toml_over_the_defaults():
@@ -243,7 +243,7 @@ def test_new_session_block_round_trips_through_load(tmp_path):
 def test_new_session_from_dict_ignores_unknown_keys():
     ns = config.NewSession.from_dict({"model": "opus", "bogus": 1})
     assert ns.model == "opus"
-    assert ns.effort == "high"
+    assert ns.effort == "medium"
 
 
 # ---------------------------------------------------------------- keys settings
@@ -282,3 +282,37 @@ def test_state_dir_env_override_wins_over_the_file(tmp_path, monkeypatch):
     cfg = config.load(p)
     assert cfg.state_dir == str(tmp_path / "throwaway")
     assert cfg.log_file == tmp_path / "throwaway" / "pantheon.log"
+
+
+def test_session_env_override_wins_over_the_file(tmp_path, monkeypatch):
+    """A throwaway deck must aim its tmux calls at its own session: reading "pantheon" from the
+    file, it started a real Assistant Claude in step 6d (2026-10-05)."""
+    p = tmp_path / "p.toml"
+    p.write_text('tmux_session = "pantheon"\n', encoding="utf-8")
+    monkeypatch.delenv("PANTHEON_SESSION", raising=False)
+    assert config.load(p).tmux_session == "pantheon"
+    monkeypatch.setenv("PANTHEON_SESSION", "pantheon-s34")
+    assert config.load(p).tmux_session == "pantheon-s34"
+    assert config.load(tmp_path / "missing.toml").tmux_session == "pantheon-s34"
+
+
+@pytest.mark.parametrize("value", ["off", "OFF", " off ", "false", "no", "0"])
+def test_assistant_env_switch_turns_it_off_whatever_the_file_says(monkeypatch, value):
+    """A throwaway deck (the launcher test lane, the double-restart script) must never start
+    a real Assistant Claude: one outlived its server on 2026-10-05."""
+    cfg = config.Config(assistant={"enabled": True, "model": "claude-opus-5-5"})
+    monkeypatch.delenv("PANTHEON_ASSISTANT", raising=False)
+    assert cfg.assistant_settings().enabled is True
+    monkeypatch.setenv("PANTHEON_ASSISTANT", value)
+    settings = cfg.assistant_settings()
+    assert settings.enabled is False
+    assert settings.model == "claude-opus-5-5"          # the rest of the block is untouched
+    assert settings.folder == cfg.projects_root
+
+
+@pytest.mark.parametrize("value", ["", "on", "yes", "1"])
+def test_assistant_env_switch_never_turns_it_on(monkeypatch, value):
+    """Only an off value counts; anything else leaves pantheon.toml in charge."""
+    monkeypatch.setenv("PANTHEON_ASSISTANT", value)
+    assert config.Config(assistant={"enabled": True}).assistant_settings().enabled is True
+    assert config.Config(assistant={"enabled": False}).assistant_settings().enabled is False

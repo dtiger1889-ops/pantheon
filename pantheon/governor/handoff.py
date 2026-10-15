@@ -83,7 +83,8 @@ def _filter_necromancy_sections(raw: str) -> str:
 
 
 def _run_pwsh(argv: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+    return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+                          check=False)
 
 
 def _tail_lines(path: Path, n: int) -> list[str]:

@@ -102,7 +102,7 @@ def run_schtasks(argv: list[str]) -> subprocess.CompletedProcess:
     before = os.environ.get("MSYS2_ARG_CONV_EXCL")
     os.environ["MSYS2_ARG_CONV_EXCL"] = "*"
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(argv, 1, "", str(exc))
     finally:

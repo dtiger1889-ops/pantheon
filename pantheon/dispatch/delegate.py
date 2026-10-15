@@ -99,7 +99,7 @@ def build_ssh_new_window_command(project: str, directory: str, claude_invocation
     The window is named for the project, so it shows in the supervisor like
     any other agent and can be joined into THE PIT."""
     inner = (f'{remote_tmux} new-window -n {shlex.quote(project)} '
-             f'-c {shlex.quote(directory)} "{claude_invocation}"')
+             f'-c {shlex.quote(directory)} "{claude_invocation}" </dev/null')
     return [reach_mod.ssh_path(ssh_bin), "-o", "BatchMode=yes", "localhost", inner]
 
 
@@ -149,7 +149,9 @@ def delegate(task: str, *, tier: Optional[str] = None, model: Optional[str] = No
     if not task:
         return DelegateResult(False, "fallback", "no task given; nothing to delegate")
     reachable = reachable or reach_mod.pantheon_tmux_reachable
-    runner = runner or (lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True, **kw))
+    # No input from the terminal unless a caller passes its own `stdin=`.
+    runner = runner or (lambda argv, **kw: subprocess.run(
+        argv, stdin=kw.pop("stdin", subprocess.DEVNULL), capture_output=True, text=True, **kw))
     directory = directory or os.getcwd()
     project = project or (Path(directory).name or "delegate")
 
@@ -157,7 +159,7 @@ def delegate(task: str, *, tier: Optional[str] = None, model: Optional[str] = No
         invocation = build_claude_invocation(task, tier=tier, model=model, perm=perm)
         argv = build_ssh_new_window_command(project, directory, invocation)
         try:
-            completed = runner(argv, timeout=LAUNCH_TIMEOUT_SECONDS)
+            completed = runner(argv, stdin=subprocess.DEVNULL, timeout=LAUNCH_TIMEOUT_SECONDS)
         except (OSError, subprocess.SubprocessError) as exc:
             return _run_fallback(task, tier=tier, model=model, perm=perm, directory=directory,
                                  runner=runner,

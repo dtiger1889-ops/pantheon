@@ -42,7 +42,7 @@ def demo_conversation() -> m.Conversation:
         m.Item(kind=m.TOOL, uuid="t1", tool=m.ToolCall(
             id="toolu_1", name="Read", summary="Read CHECKPOINT.md", file="CHECKPOINT.md",
             input_text="{'file_path': 'C:/Home/x/Documents/Projects/project_lanterns/CHECKPOINT.md'}",
-            result_text="Last updated: 2026-09-06\nOpen threads: launcher gate, S25 codex runner…")),
+            result_text="Last updated: 2026-09-06\nOpen threads: launcher gate, codex runner…")),
         m.Item(kind=m.TOOL, uuid="t2", tool=m.ToolCall(
             id="toolu_2", name="Bash", summary="Bash tmux list-sessions",
             input_text="tmux list-sessions", result_text="no server running on /tmp/tmux-1000/default",

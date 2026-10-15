@@ -184,22 +184,33 @@ class Pick(ModalScreen[Optional[str]]):
         self.current = current
         self._by_key = {o.key: o for o in self.options if o.key}
 
+    def _phone_width(self) -> Optional[int]:
+        """The box width on a phone-sized screen (the whole screen), or None at the desk. Unit
+        tests build lines without a running app: desk."""
+        try:
+            width = self.app.size.width
+        except Exception:
+            return None
+        if not width or width >= DESK_AT:
+            return None
+        return width
+
     def _line(self, o: PickOption) -> str:
         mark = "●" if o.value == self.current else " "
-        bits = [mark, o.key, o.label]
-        if o.detail:
-            bits.append(o.detail)
-        line = "  ".join(b for b in bits if b != "")
-        # A line longer than the box clips into unreadable fragments; cut it to the box's inner width with a visible
-        # ellipsis instead. Same fixed-width numbers _size_box uses; 6 = border + padding.
-        try:
-            wide = self.app.size.width >= DESK_AT
-        except Exception:  # unit tests build lines without a running app; fail open to desk width
-            wide = True
-        avail = (DESK_WIDTH if wide else PHONE_WIDTH) - 6
-        if len(line) > avail:
-            line = line[: avail - 1] + "…"
-        return line
+        phone = self._phone_width()
+        # A line longer than the box clips into unreadable fragments; 6 = border + padding, and on the phone 4 more for the list's own padding
+        # and scrollbar (measured 2026-10-06: a 44-column line still wrapped in a 50-column box).
+        avail = phone - 10 if phone else DESK_WIDTH - 6
+
+        def cut(text: str) -> str:
+            return text if len(text) <= avail else text[: avail - 1] + "…"
+
+        head = "  ".join(b for b in (mark, o.key, o.label) if b != "")
+        if phone and o.detail:
+            # On the phone the detail gets a line of its own under the choice instead of being
+            # cut off after the first few words.
+            return cut(head) + "\n" + cut("    " + o.detail)
+        return cut(head + ("  " + o.detail if o.detail else ""))
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
@@ -210,6 +221,14 @@ class Pick(ModalScreen[Optional[str]]):
     def on_mount(self) -> None:
         _size_box(self)
         option_list = self.query_one("#options", OptionList)
+        phone = self._phone_width()
+        if phone:
+            # Two-line choices need the room: the whole screen, not the 50 x 12 desk-era box.
+            height = self.app.size.height or 24
+            box = self.query_one("#box", Vertical)
+            box.styles.width = phone
+            box.styles.max_height = max(PHONE_MAX_HEIGHT, height - 2)
+            option_list.styles.max_height = max(8, height - 8)
         for o in self.options:
             option_list.add_option(Option(self._line(o), id=o.value, disabled=o.disabled))
         # An `OptionList` starts with nothing highlighted, so Enter would do nothing until the user

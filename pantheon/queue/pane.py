@@ -36,6 +36,8 @@ from textual.widget import Widget
 from textual.widgets import Input, Static
 
 from .. import config, eventcache as eventcache_mod, glyphs as glyphs_mod, theme, tmuxctl
+from .. import tmuxfeed
+from ..keepalive import KeepAlive
 from ..dispatch import launch as launch_mod, marks as marks_mod
 from ..hud import sources as hud_sources
 from ..models import TaskRow
@@ -237,7 +239,7 @@ def group_headings(rows: list[TaskRow], tab: TabSpec) -> list[str]:
 # ---------------------------------------------------------------- the pane
 
 
-class QueuePane(Widget):
+class QueuePane(KeepAlive, Widget):
     """The task list. Owns its own keys, its own width, and the "work this" flow."""
 
     can_focus = True
@@ -297,7 +299,10 @@ class QueuePane(Widget):
         # The default goes through the short-lived cache (perf sweep item 2), same as the
         # supervisor pane's default -- inside the combined deck the two usually share one
         # subprocess spawn instead of each pane starting its own.
-        self._window_source = window_source or (lambda: tmuxctl.list_windows_cached(None))
+        # Since 2026-10-08 the tmux feed answers first (`pantheon/tmuxfeed.py`), so the queue
+        # window spawns no tmux on its drawing thread while the deck's feed is fresh.
+        self._window_source = window_source or (lambda: tmuxfeed.windows_or_live(
+            self.cfg, lambda: tmuxctl.list_windows_cached(None)))
         # Set only by `DeckApp` (perf sweep item 1): reuse the supervisor pane's own last fold
         # instead of folding the whole event log again just for the dispatch concurrency guard.
         # `None` (every standalone `QueueApp`) means `agent_rows()` keeps folding on its own.
@@ -377,9 +382,17 @@ class QueuePane(Widget):
         try:
             path = Path(self.cfg.log_file)
             path.parent.mkdir(parents=True, exist_ok=True)
+            root = logging.getLogger("pantheon")
+            # The deck embeds this pane and has already sent the root logger to the same file;
+            # a second handler wrote every deck line twice (seen 2026-10-05).
+            target = str(path.resolve())
+            for owner in (logging.getLogger(), root):
+                for existing in owner.handlers:
+                    if getattr(existing, "baseFilename", None) and \
+                            str(Path(existing.baseFilename).resolve()) == target:
+                        return
             handler = logging.FileHandler(path, encoding="utf-8")
             handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-            root = logging.getLogger("pantheon")
             root.setLevel(logging.INFO)
             root.addHandler(handler)
         except OSError:
@@ -1148,7 +1161,8 @@ class QueuePane(Widget):
             return self._open_sprints_shell()
         uri = f"obsidian://open?path={quote(str(path))}"
         try:
-            subprocess.run([self.cfg.tools.cmd, "/c", "start", "", uri], check=False)
+            subprocess.run([self.cfg.tools.cmd, "/c", "start", "", uri], stdin=subprocess.DEVNULL,
+                           check=False)
         except OSError as exc:
             log.exception("could not launch Obsidian")
             return self._say(f"could not open Obsidian: {exc}", warn=True)
@@ -1178,7 +1192,8 @@ class QueuePane(Widget):
     def _open_source_in_obsidian(self, path: Path) -> None:
         uri = f"obsidian://open?path={quote(str(path))}"
         try:
-            subprocess.run([self.cfg.tools.cmd, "/c", "start", "", uri], check=False)
+            subprocess.run([self.cfg.tools.cmd, "/c", "start", "", uri], stdin=subprocess.DEVNULL,
+                           check=False)
         except OSError as exc:
             log.exception("could not launch Obsidian")
             return self._say(f"could not open Obsidian: {exc}", warn=True)

@@ -5,7 +5,7 @@ D7 ("never write to the vault") only ever bound the vault -- this folder is Pant
 so `pantheon new` and the optional `Mark done` toggle may write here. Nothing in this module ever touches the vault.
 
 Tabs come from `<folder>/pantheon-tabs.yaml` -- the gh-dash `{name, key, filters, sort, groupBy}`
-shape (research B9), read by the same `basefilter` module the Obsidian Base source uses, so one
+shape, read by the same `basefilter` module the Obsidian Base source uses, so one
 filter language and one `TaskSource` interface serve both adapters. A missing tabs file gets a
 starter one written out on first run, copying the Sprints views' rules so a brand-new folder shows
 something familiar immediately -- Obsidian never reads this file, so writing it is not a vault

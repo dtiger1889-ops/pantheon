@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from .. import config as config_mod
 from .. import dialogs as dialogs_mod
 from .. import tmuxctl
 from ..dispatch import briefing as briefing_mod
@@ -47,7 +48,8 @@ def claude_command(base: str, options: Optional[dict] = None) -> str:
         cmd += " --continue"              # the most recent one in the folder
     model = str(options.get("start_model") or "").strip()
     if model and _SAFE_ARG.match(model):
-        cmd += f" --model {model}"
+        # `[1m]` is a bash glob pattern: quote a name that carries one.
+        cmd += f" --model '{model}'" if "[" in model else f" --model {model}"
     effort = str(options.get("start_effort") or "").strip().lower()
     if effort in EFFORTS:
         cmd += f" --effort {effort}"
@@ -73,6 +75,15 @@ def claude_command(base: str, options: Optional[dict] = None) -> str:
         # A file, not the text: a paragraph typed into the window would need shell quoting.
         cmd += f' --append-system-prompt-file "{prompt_file}"'
     return cmd
+
+
+def exit_suffix(root: Optional[Path] = None) -> str:
+    """What follows the Claude command on the typed line: `; "<root>/bin/pane_exit" $?`, so the
+    pane records Claude Code's exit code in the event log even when its SessionEnd hook never
+    fires. The path is the
+    one the pane's bash sees (forward slashes)."""
+    script = (Path(root or config_mod.PROJECT_ROOT) / "bin" / "pane_exit").as_posix()
+    return f'; "{script}" $?'
 
 
 def session_name(project_dir: str, briefing_path: str = "") -> str:
@@ -137,7 +148,8 @@ class ClaudeProvider:
             options["name"] = session_name(project_dir, briefing_path)
         # A tmux login shell lands in HOME and ignores -c: cd explicitly.
         tmuxctl.send_text(target, f'cd "{project_dir}"', tmux=tmux)
-        tmuxctl.send_text(target, claude_command(self.cfg.tools.claude, options), tmux=tmux)
+        tmuxctl.send_text(target, claude_command(self.cfg.tools.claude, options) + exit_suffix(),
+                          tmux=tmux)
         if not tmuxctl.wait_for_command(target, RUNNING, START_TIMEOUT_SECONDS, tmux=tmux, sleep=self._sleep):
             return LaunchResult(False, "tmux", index, name,
                                 message=f"claude did not start in window {index}; press j to look at it")

@@ -123,6 +123,10 @@ class QueueApp(App):
         """`R`: the same restart screens as the deck (pantheon/restart.py)."""
         restart_mod.ask(self, self.cfg, lambda m, tone=None: self.pane._say(m, warn=bool(tone)))
 
+    async def action_quit(self) -> None:
+        """`q` asks before it closes this window (restart.ask_quit)."""
+        restart_mod.ask_quit(self, self.exit, lambda m, tone=None: self.pane._say(m, warn=bool(tone)))
+
 
 def main() -> int:
     cfg = config.load()
@@ -131,7 +135,10 @@ def main() -> int:
         app.pane.message = f"vault folder not found at {cfg.sprints_dir}; fix it in pantheon.toml"
     try:
         app.run()
-    except Exception:
+    except Exception as exc:
+        if orphan_mod.terminal_gone(exc):
+            log.info("the queue's window was closed under it (a restart); leaving")
+            return 0
         log.exception("the queue pane stopped")
         print(f"the queue pane stopped; details are in {cfg.log_file}", file=sys.stderr)
         return 1

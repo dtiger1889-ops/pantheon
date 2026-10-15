@@ -73,11 +73,11 @@ glyphs = "unicode"          # "unicode" | "ascii" (Android SSH clients vary)
                             # from instead of Obsidian. Not in use while task_source stays "obsidian_base".
 folder = "C:/Users/<you>/Documents/pantheon-tasks"          # REQUIRED if task_source = "standalone"
 
-[new_session]                # what the `n` picker preselects
-                            # for model/effort on a fresh session. "default" leaves the field alone
-                            # (the CLI's own default); anything else is applied right after launch.
-model = "default"            # e.g. "fable", "opus", "claude-opus-5-5" -- see pane.py MODEL_CHOICES
-effort = "high"               # "default" | "low" | "medium" | "high" | "xhigh" | "max"
+[new_session]                # what "default" means on the `n` model/effort screens (they say it in
+                            # words); passed to Claude as start flags. "default" here leaves the
+                            # field to Claude Code's own default instead.
+model = "claude-opus-5-5[1m]"  # e.g. "fable", "opus", "claude-opus-5-5" -- see model_picker.py
+effort = "medium"             # "default" | "low" | "medium" | "high" | "xhigh" | "max"
 
 [keys]                       # the one prefix-less key that jumps back to the deck from
                             # inside any agent window. Change this if F12 does not transmit
@@ -88,6 +88,8 @@ back_to_deck = "F12"
 #                            # and Pantheon uses micro if installed, else nano, else $EDITOR.
 # command = "micro"          # any terminal editor on the PATH, with its own flags if you want them:
 #                            # "nano", "nvim", "hx", "micro -softwrap true"
+# vscode_cli = 'C:\Users\<you>\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd'
+#                            # only if `V` says it can't find VS Code
 
 [usage]                      # where the BUDGET card's Claude numbers may come from
 account_read = true          # also read your account's own usage from Anthropic. false = off.
@@ -104,11 +106,42 @@ effort = "medium"            # passed as --effort (low, medium, high, xhigh, max
                              #
 name = "Pantheon Assistant"  # the name a NEW Assistant conversation gets (--name); never renames
 
+[assistant.telegram]         # message the Assistant from Telegram;
+                             # run by `python -m pantheon.assistant_telegram`
+enabled = false              # true = the poller passes your messages in and sends replies back
+chat_id = ""                 # the ONLY chat it answers; "" = [notify.telegram] chat_id (the same
+                             # chat id the Telegram Notifier extension uses)
+credential_target = ""       # Windows Credential Manager target holding the bot token; never the
+                             # token itself. "" = [notify.telegram] credential_target
+poll_seconds = 25            # how long one getUpdates call waits for a new message
+reply_wait_seconds = 600     # how long it watches for the Assistant's answer before giving up
+max_age_minutes = 10         # older messages (a backlog after downtime) are not passed on
+
 [sessions]                   # the SESSIONS sidebar
 # Conversations whose folder is one of these (or inside one) never show in the finished list and
 # never make a project heading: throwaway trials, test servers, probe folders. Only hidden --
 # their transcripts are left alone. %NAME% expands from the environment. [] = hide nothing.
 hide_folders = ["C:/msys64/tmp", "/tmp", "%LOCALAPPDATA%/Temp", "C:/Windows/Temp"]
+
+[health]                     # stability: the freeze watcher outside tmux (pantheon/health/watch.py)
+enabled = true               # false = no watcher at all
+probe_seconds = 30           # how often it asks tmux `list-sessions`
+freeze_after_misses = 3      # unanswered probes in a row that count as a freeze
+capture_seconds = 60         # cap on the whole freeze capture (state/health/freeze-<UTC>/)
+auto_restart = true          # after a freeze: end the server and run the full restart
+storm_minutes = 60           # a second freeze inside this window gets capture and alert only
+snapshot_seconds = 300       # how often the session snapshot is saved while healthy
+sample_seconds = 60          # how often handles and memory are sampled (state/health.json)
+warn_handles = 10000         # warn once when the tmux server holds this many Windows handles
+low_commit_percent = 90      # warn once when memory commit reaches this share of the limit
+planned_restart = true       # restart when handles are high and every agent is between turns
+planned_restart_handles = 20000
+planned_idle_minutes = 10    # ...and nobody has typed into any client for this long
+handle_exe = ""              # full path to Sysinternals handle64.exe for handle counts by type
+procdump_exe = ""            # full path to Sysinternals procdump.exe: a memory dump on a freeze
+command_log = true           # log every tmux command Pantheon sends (state/tmux-commands.log)
+alerts = ["deck", "toast", "ntfy"]   # ntfy uses [notify.ntfy] url and topic; never Telegram
+close_empty_minutes = 5      # close a tmux pane with no session in it (empty shell or dead pane) after this long unchanged; 0 = never
 
 [tools]
 ccusage = ""  # "" = via npx; point this at a local install once one exists

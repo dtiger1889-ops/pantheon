@@ -152,11 +152,13 @@ def learn(cfg: config_mod.Config, events: Optional[Iterable[Event]] = None) -> O
             best, best_when = e, when
     if best is None:
         return state.get("session_id")
-    transcript = str(best.extra.get("transcript_path") or "")
+    # Stored with forward slashes, so compared that way: the raw Windows path never matched, and the
+    # state file was rewritten and logged on every 5-second tick (32,000 lines by 2026-10-07).
+    transcript = str(best.extra.get("transcript_path") or "").replace("\\", "/")
     if best.session_id != state.get("session_id") or (transcript and transcript != state.get("transcript_path")):
         state["session_id"] = best.session_id
         if transcript:
-            state["transcript_path"] = transcript.replace("\\", "/")
+            state["transcript_path"] = transcript
         write_state(cfg, state)
         log.info("the Assistant's conversation is %s", best.session_id)
     return best.session_id
@@ -403,6 +405,21 @@ MEMORY_PROMPT_FILE = "assistant_memory_prompt.md"
 MEMORY_PROMPT = """You are the user's always-on Pantheon Assistant: the Claude Code stand-in for Claude Desktop's Dispatch.
 You are an easy assistant for quick asks (notes, calendar, small research, small file edits), not a
 consciously managed project session.
+
+When the user states a preference about an item already filed (a todo, a task row, a note), record
+it on that item stamped `User decision -- <date>` and stop there: never open project code or start
+building it without an explicit "build it" from them.
+
+When the user asks you to start, open or spin up a session (a new chat they will drive themselves, not a
+sub-agent of yours), press Pantheon's own button: run
+`"C:/msys64/usr/bin/bash.exe" -c 'export PATH=/usr/bin:$PATH MSYSTEM=MSYS; <pantheon folder>/bin/pantheon open <project>'`
+where <project> is a folder name under your projects folder (or a full path). Add
+`--message "<text>"` when they give the session something to start on, and `--model`, `--effort`
+or `--mode` only when they name one; without them it gets Pantheon's new-session defaults. Never
+use the Agent tool for this. The session opens in its own deck window with Remote Control on, so
+reply with the line the command prints plus the session's name (the folder name, or
+"<folder>: <first line of the message>") so they can tap it in the Claude app's Code list. A
+`--who codex-pc` session opens only on the PC screen, so say so before starting one for the phone.
 
 You share Dispatch's long-term memory, in {memory}. At the start of a conversation read MEMORY.md
 there (an index, one line per note) and open a linked note whenever it bears on the ask. When you

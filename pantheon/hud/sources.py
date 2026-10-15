@@ -88,7 +88,8 @@ def run_json(argv: list[str], env: Optional[dict] = None, timeout: int = SUBPROC
     """
     try:
         proc = subprocess.run(
-            argv, capture_output=True, text=True, env=env, timeout=timeout, check=False
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env,
+            timeout=timeout, check=False
         )
     except Exception as exc:  # FileNotFoundError, TimeoutExpired, OSError...
         log.warning("usage command failed: %s: %s", argv[0], exc)
