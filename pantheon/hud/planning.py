@@ -28,7 +28,7 @@ from typing import Iterable, Mapping, Optional, Sequence
 from . import calc
 
 # Below this many past rows a percentile is not a percentile: the range widens to the full
-# observed min..max and says so (spec step 1).
+# observed min..max and says so.
 MIN_ROWS_FOR_INTERVAL = 5
 P_LOW, P_HIGH = 10.0, 90.0
 

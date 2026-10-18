@@ -87,6 +87,8 @@ bin/pantheon --restart    # restart the deck windows; agent sessions keep runnin
 bin/pantheon --restart --all   # restart everything once every agent is between turns, then resume them
 ```
 
+`bin/pantheon-delegate "<task>"` lets a Codex session hand a task to a Claude worker. With the deck running, the worker opens as a new deck window; without it, the task goes to a fallback command you supply, named by the `PANTHEON_DELEGATE_FALLBACK` environment variable (`pantheon/dispatch/delegate.py` describes the arguments it receives).
+
 A background watcher keeps an eye on the tmux server and closes any tmux pane with nothing running in it (an empty shell or a dead pane) after 5 minutes untouched. Set `close_empty_minutes` under `[health]` in `pantheon.toml`; 0 turns it off.
 
 Tests: `.venv/bin/python -m pytest -q`

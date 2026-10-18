@@ -107,8 +107,7 @@ class TileDemo(App):
 
 
 def _text_dump(app, width: int, height: int) -> str:
-    """The screen as plain characters, so column alignment and empty space stay visible -- the
-    same technique `docs/renders/render_desk.py` uses for the deck renders."""
+    """The screen as plain characters, so column alignment and empty space stay visible."""
     console = Console(record=True, width=width, height=height, file=io.StringIO(),
                       legacy_windows=False, color_system="truecolor")
     console.print(app.screen._compositor)

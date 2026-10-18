@@ -12,7 +12,7 @@ a password) instead of waiting on it, `ConnectTimeout` bounds the network handsh
 subprocess-level `timeout` is a second, harder cap in case the far side accepts the connection
 and then wedges (a hang on list-sessions means the server is wedged).
 Any failure -- non-zero exit, timeout, missing `ssh` binary -- reads as False, which is exactly
-"fall back to path B" (spec step 5, acceptance 5).
+"fall back to path B".
 """
 from __future__ import annotations
 

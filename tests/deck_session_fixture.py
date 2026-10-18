@@ -1,7 +1,7 @@
-"""The three sessions the deck's committed snapshot and `docs/renders/` are drawn from.
+"""The three sessions the deck's committed snapshot is drawn from.
 
-Not a test -- a fixture module, imported by `tests/test_snapshots.py` and by
-`docs/renders/render_desk.py` so both draw the SAME wall of conversations.
+Not a test -- a fixture module, imported by `tests/test_snapshots.py` so every snapshot draws
+the SAME wall of conversations.
 
 It exists because the sidebar's real source (`session_view/recent.py`) scans the user's own
 `~/.claude/projects` and `~/.codex/sessions` and stamps each row with a file's mtime. A snapshot

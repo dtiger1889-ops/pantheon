@@ -7,7 +7,7 @@ Space adds or removes the row under the cursor (the plan keeps the order you add
 re-reads the queue and the limits file, `q` closes.
 
 Every figure comes from `pantheon/planning/fit.py` re-fitting `state/limits/limits.jsonl` on each
-read, so a row that has actually run moves the next plan (spec step 5). Every figure shows its
+read, so a row that has actually run moves the next plan. Every figure shows its
 range and how many past rows stand behind it; `not enough data` where that is the truth. Percent
 only: dollars stay off until the user asks for them.
 

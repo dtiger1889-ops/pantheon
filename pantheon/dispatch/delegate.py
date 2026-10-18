@@ -3,18 +3,19 @@ hand a task to a Claude worker.
 
 When the pantheon tmux (session 0) is reachable (`reach.pantheon_tmux_reachable`), the worker
 opens as a new window in it over ssh -- Path A, deck-visible, so THE PIT shows every worker Codex
-launches. When it is not, this shells straight to a separate `delegate-claude` helper script (not part of this repo). Same command either way; Codex never has to know which one ran.
+launches. When it is not, this shells to a fallback command you supply (Path B), named by the
+PANTHEON_DELEGATE_FALLBACK environment variable (default `delegate-claude`). It is not part of
+this repo: any script on PATH that accepts `-Tier`, `-Model`, `-Perm`, `-Dir` and `-DryRun`,
+takes the task as its last argument, runs a headless Claude worker and prints the result will do.
+Same command either way; Codex never has to know which one ran.
 
 Never hangs: the reachability check has its own timeout (`reach.py`), and a Path A launch that
-raises or exits non-zero falls straight through to Path B rather than propagating (spec step 5).
-Path B's own `claude -p` call is allowed to block -- that IS path B's contract (Codex "runs one
+raises or exits non-zero falls straight through to Path B rather than propagating.
+Path B's own call is allowed to block -- that IS path B's contract (Codex "runs one
 command and reads the printed result") -- so no timeout is imposed on that leg.
 
-`delegate-claude.ps1`/`.cmd` are shelled to, not
-imported or forked -- there is nothing to import across languages (PowerShell vs. Python), so the
-tier ladder below is a Python MIRROR of that script's ladder, not a shared source of truth.
-Consolidation note for merge: if delegate-claude.ps1's ladder ever changes, `TIER_LADDER` here
-needs the matching edit by hand; nothing enforces the two staying in sync today.
+The fallback is shelled to, not imported, so if it has its own tier ladder, keep `TIER_LADDER`
+below matching it by hand; nothing enforces the two staying in sync.
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from . import reach as reach_mod
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
-# Mirrors delegate-claude.ps1's ladder: executor -> sonnet (default),
+# Tier ladder: executor -> sonnet (default),
 # planner -> claude-opus-5-5, taste -> fable.
 TIER_LADDER = {
     "executor": "sonnet",
@@ -38,9 +39,9 @@ TIER_LADDER = {
     "taste": "fable",
 }
 DEFAULT_TIER = "executor"
-DEFAULT_PERM = "auto"   # matches delegate-claude's default: the user's normal agent mode, no stalls
+DEFAULT_PERM = "auto"   # the user's normal agent mode, no stalls
 REMOTE_TMUX = "/usr/bin/tmux"
-FALLBACK_COMMAND = "delegate-claude"
+FALLBACK_COMMAND = os.environ.get("PANTHEON_DELEGATE_FALLBACK") or "delegate-claude"
 # Reaching the far side is capped hard (reach.py); the launch call itself (one ssh round trip
 # that opens a window and returns -- it does not wait for the worker to do anything) gets a
 # short cap of its own so a wedged ssh session after a successful probe still cannot hang Codex.
@@ -57,7 +58,7 @@ class DelegateResult:
 
 
 def resolve_model(tier: Optional[str], model: Optional[str]) -> str:
-    """`model` (a raw alias, `-Model` in delegate-claude's own flags) always wins; otherwise the
+    """`model` (a raw alias, passed to the fallback as `-Model`) always wins; otherwise the
     tier ladder; an unrecognised tier falls back to the default tier's model rather than raising
     -- a typo in `--tier` should degrade, not break the delegation."""
     if model:
@@ -66,9 +67,7 @@ def resolve_model(tier: Optional[str], model: Optional[str]) -> str:
 
 
 def env_prefix() -> str:
-    """The env-scrub opt-out for the launched child, exactly as delegate-claude.ps1 sets it for
-    ITS child: un-scrub, and
-    drop the two vars that mark a shell as a Claude subprocess, so the worker starts at its real
+    """The env-scrub opt-out for the launched child: un-scrub, and drop the two vars that mark a shell as a Claude subprocess, so the worker starts at its real
     permission mode instead of being forced down to `default`. A fresh tmux window does not
     inherit Codex's already-scrubbed environment, but it DOES inherit the USER-scope
     `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` -- this line is what cancels that, for this one child
@@ -95,7 +94,7 @@ def build_ssh_new_window_command(project: str, directory: str, claude_invocation
                                  ssh_bin: Optional[str] = None,
                                  remote_tmux: str = REMOTE_TMUX) -> list[str]:
     """The argv that opens the worker window on the session-0 pantheon server, reached over ssh
-    (spec step 2): `ssh localhost 'tmux new-window -n <project> -c <dir> "<claude invocation>"'`.
+    `ssh localhost 'tmux new-window -n <project> -c <dir> "<claude invocation>"'`.
     The window is named for the project, so it shows in the supervisor like
     any other agent and can be joined into THE PIT."""
     inner = (f'{remote_tmux} new-window -n {shlex.quote(project)} '
@@ -142,7 +141,7 @@ def delegate(task: str, *, tier: Optional[str] = None, model: Optional[str] = No
             project: Optional[str] = None, cfg=None,
             reachable: Optional[Callable[[], bool]] = None,
             runner: Optional[Runner] = None) -> DelegateResult:
-    """Detect-tmux-or-background (spec steps 3/5), from ONE call. `reachable`/`runner` are
+    """Detect-tmux-or-background, from ONE call. `reachable`/`runner` are
     injectable for tests (and for a caller that already has its own tmux/subprocess seams); real
     callers leave both at their defaults."""
     task = (task or "").strip()

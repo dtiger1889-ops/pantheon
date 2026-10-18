@@ -12,7 +12,7 @@ Every `probe_seconds` it asks tmux `list-sessions`:
     (`sample.py`) into `state/health.json` for the deck, and the warnings and the planned restart
     are checked. The first good sample in each UTC hour also appends one line to
     `state/health/handles-hourly.jsonl` (server pid, handles, memory, each claude.exe's handles),
-    so the done bar's "flat handles across a day" has a recorded series (spec step 7).
+    so a handle leak shows up as a rising series across the day.
   - timed out: one miss. `freeze_after_misses` misses in a row: capture, then one more probe. An
     answer there is a stall (folder renamed `stall-*`, alert, nothing ended). Still no answer is a
     freeze: storm guard, alert, end the server (`taskkill //F //T`), restart and resume
@@ -472,7 +472,7 @@ class Watcher:
         _write_json(last_snapshot_path(self.cfg), snapshot)
 
     def new_pane_exits(self) -> list[dict]:
-        """`PaneExit` events (bin/pane_exit, spec step 3) added to the events file since the last
+        """`PaneExit` events (bin/pane_exit) added to the events file since the last
         pass; the first pass only notes where the file ends."""
         path = Path(self.cfg.events_file)
         try:
@@ -507,7 +507,7 @@ class Watcher:
 
     def record_pane_exits(self) -> None:
         """On a nonzero exit code, read Windows' crash records naming claude.exe within 2 minutes
-        of the exit into state/health/pane-exits.jsonl (spec step 3)."""
+        of the exit into state/health/pane-exits.jsonl."""
         for event in self.new_pane_exits():
             try:
                 code = int(event.get("code"))
