@@ -4,9 +4,28 @@ the task; returning False, it routes to the path-B `delegate-claude` invocation.
 a fake subprocess runner -- neither hangs, and no real ssh/tmux/claude call happens here."""
 from __future__ import annotations
 
+import importlib
 import subprocess
 
+import pytest
+
 from pantheon.dispatch import delegate
+
+
+@pytest.fixture(autouse=True)
+def default_fallback(monkeypatch):
+    """These tests describe the default fallback name; a PANTHEON_DELEGATE_FALLBACK set in the
+    caller's environment must not change what they check."""
+    monkeypatch.setattr(delegate, "FALLBACK_COMMAND", "delegate-claude")
+
+
+def test_fallback_command_comes_from_the_environment(monkeypatch):
+    monkeypatch.setenv("PANTHEON_DELEGATE_FALLBACK", "my-helper")
+    try:
+        assert importlib.reload(delegate).build_fallback_command("do it") == ["my-helper", "do it"]
+    finally:
+        monkeypatch.delenv("PANTHEON_DELEGATE_FALLBACK")
+        importlib.reload(delegate)
 
 
 def test_path_a_when_reachable_builds_ssh_new_window_with_planner_model():
