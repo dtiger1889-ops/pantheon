@@ -548,6 +548,24 @@ def test_say_elsewhere_passes_the_words_in_a_file_never_on_the_command_line(tmp_
     assert player.words == "secret words"
 
 
+def test_a_posix_home_is_never_passed_to_the_player_as_appdata(tmp_path, monkeypatch):
+    for name in ("USERPROFILE", "LOCALAPPDATA", "TEMP", "TMP"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(config_mod, "HOME", "/home/someone")
+    player, seen = FakePlayer(["playing"], exits=False), {}
+    def popen(args, **kw):
+        seen.update(kw["env"])
+        return player(args, **kw)
+    ve.say_elsewhere("pc", "w", ve.Settings.from_config(_cfg(tmp_path)), tmp_path / "spool",
+                     popen=popen, clock=Clock(), sleep=Clock().sleep)
+    assert "LOCALAPPDATA" not in seen and "TEMP" not in seen     # the script finds its own folders
+    monkeypatch.setenv("USERPROFILE", "D:/profiles/someone")
+    seen.clear()
+    ve.say_elsewhere("pc", "w", ve.Settings.from_config(_cfg(tmp_path)), tmp_path / "spool",
+                     popen=popen, clock=Clock(), sleep=Clock().sleep)
+    assert seen["LOCALAPPDATA"] == "D:/profiles/someone/AppData/Local"
+
+
 def test_no_words_stay_on_disk_when_the_player_dies_before_reading_them(tmp_path):
     assert _say(tmp_path, FakePlayer([]))[0] == ""                 # exited without a word
     assert _say(tmp_path, FakePlayer([], exits=False))[0] == ""    # never started; stopped

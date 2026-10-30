@@ -201,7 +201,7 @@ def test_a_project_session_reusing_the_assistant_pane_number_is_not_learned(tmp_
     result = assistant_mod.ensure(cfg, provider=FakeProvider(fake), sleep=no_sleep, learn_wait=0)
     session_start(cfg, "mine", result["pane_id"])
     assert assistant_mod.learn(cfg) == "mine"
-    session_start(cfg, "game-modding", result["pane_id"], detail="resume", cwd=ROOT + "/game_modding")
+    session_start(cfg, "model-trains", result["pane_id"], detail="resume", cwd=ROOT + "/model_trains")
     assert assistant_mod.learn(cfg) == "mine"
     assert assistant_mod.read_state(cfg)["session_id"] == "mine"
 

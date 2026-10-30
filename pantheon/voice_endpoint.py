@@ -333,10 +333,13 @@ def say_elsewhere(target: str, words: str, settings: Settings, spool: Path, unti
     # The script keeps its files under TEMP and finds the Home Assistant token under LOCALAPPDATA;
     # a shell started without them (seen from a nested MSYS2 bash) would end it at once.
     env = dict(os.environ)
+    # Only a Windows profile path (drive letter) is filled in; otherwise the script finds the
+    # folders itself, which beats pointing it at a POSIX home that has no AppData.
     profile = env.get("USERPROFILE") or str(config_mod.HOME)
-    env.setdefault("LOCALAPPDATA", f"{profile}/AppData/Local")
-    env.setdefault("TEMP", f"{env['LOCALAPPDATA']}/Temp")
-    env.setdefault("TMP", env["TEMP"])
+    if re.match(r"^[A-Za-z]:[\\/]", profile):
+        env.setdefault("LOCALAPPDATA", f"{profile}/AppData/Local")
+        env.setdefault("TEMP", f"{env['LOCALAPPDATA']}/Temp")
+        env.setdefault("TMP", env["TEMP"])
     try:
         proc = popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True, env=env)

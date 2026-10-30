@@ -647,12 +647,12 @@ def pane_exit(minutes_ago: float, pane: str, code) -> Event:
 def test_pane_exit_without_session_end_reads_ended_without_its_exit_hook():
     """The 2026-09-25 case: claude.exe vanished, no SessionEnd, only the pane's exit code."""
     events = [
-        ev(ts=ts(6), event="SessionStart", session_id="gm", cwd=ROOT + "/game_modding", tmux_pane="%5"),
-        ev(ts=ts(4), event="PostToolUse", session_id="gm", cwd=ROOT + "/game_modding", tmux_pane="%5",
+        ev(ts=ts(6), event="SessionStart", session_id="gm", cwd=ROOT + "/model_trains", tmux_pane="%5"),
+        ev(ts=ts(4), event="PostToolUse", session_id="gm", cwd=ROOT + "/model_trains", tmux_pane="%5",
            tool_name="Bash"),
         pane_exit(2, "%5", 3),
     ]
-    windows = [win(5, "game_modding", "bash", ROOT + "/game_modding", "%5")]
+    windows = [win(5, "model_trains", "bash", ROOT + "/model_trains", "%5")]
     row = only(st.fold(events, windows, NOW, projects_root=ROOT), "gm")
     assert row.status == AgentStatus.GONE
     assert row.last_action == "ended without its exit hook (exit 3)"

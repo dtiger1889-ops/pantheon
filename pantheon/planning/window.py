@@ -1,7 +1,7 @@
 """Open the usage-planning page from the deck, in its own tmux window named `PLAN`.
 
-`pantheon --plan` needs `bin/pantheon` (behind the launcher gate), so the deck's `U` key does the
-same job from here: one reusable window running `bin/plan`. Pressing `U` again while the page is
+The deck's `U` key does the same job as `pantheon --plan` without leaving the deck: one reusable
+window running `bin/plan`. Pressing `U` again while the page is
 open just goes back to it; quitting the page (`q`) closes the window and F1 returns to the deck.
 Never raises; the dict says what happened in plain words.
 """
