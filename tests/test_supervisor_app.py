@@ -93,14 +93,17 @@ def styles_of(static: Static) -> str:
     return " ".join(str(getattr(span, "style", "")) for span in getattr(content, "spans", []))
 
 
-def run_at(tmp_path, width, height=24, windows=(), fixture=None):
-    """Start the deck at a given terminal size and hand back what it drew."""
+def run_at(tmp_path, width, height=24, windows=(), fixture=None, keys=()):
+    """Start the deck at a given terminal size, press `keys`, and hand back what it drew."""
     app = SupervisorApp(cfg=make_config(tmp_path, fixture), window_source=lambda: list(windows))
     captured = {}
 
     async def drive():
         async with app.run_test(size=(width, height)) as pilot:
             await pilot.pause()
+            for key in keys:
+                await pilot.press(key)
+                await pilot.pause()
             table = app.query_one("#agents", DataTable)
             captured["header"] = str(app.query_one("#header", Static).content)
             captured["status"] = str(app.query_one("#status", Static).content)
@@ -190,8 +193,9 @@ def test_pane_picks_up_icons_from_appearance_settings(tmp_path):
 def test_extra_columns_appear_at_desk_width(tmp_path):
     """D tier: five columns, wider than the phone/narrow layouts, but
     `session`/`folder` have left the table for the detail panel -- see
-    `test_detail_panel_shows_session_model_and_folder_at_desk_width` below."""
-    drawn = run_at(tmp_path, 100)
+    `test_detail_panel_shows_session_model_and_folder_at_desk_width` below. Since 2026-10-18
+    the desk draws two-line rows; `f` brings this table back."""
+    drawn = run_at(tmp_path, 100, keys=("f",))
     assert len(drawn["columns"]) == len(WIDE_COLUMNS)
     assert drawn["columns"] == ["state", "project", "where", "last action", "age"]
     state_cell = drawn["cells"][0]
@@ -199,6 +203,70 @@ def test_extra_columns_appear_at_desk_width(tmp_path):
     assert "blocked - permission" in state_cell
     assert "!! blocked - permission" in drawn["screen"]
     assert drawn["table_width"] <= drawn["viewport_width"]
+
+
+def test_desk_rows_read_the_herdr_way(tmp_path):
+    """At desk width each
+    agent is two lines -- glyph + title, then one state word, provider, project, age and what it
+    is doing in words. No `pantheon:N`, no column header, no model/mode in the row."""
+    for width in (100, 180):
+        drawn = run_at(tmp_path, width, windows=[PANTHEON_WINDOW])
+        assert drawn["columns"] == ["agent"]
+        first, second = drawn["cells"][0].splitlines()
+        assert first.startswith("!! ")
+        assert second.strip().startswith("blocked · claude · hiking_log_v2 · ")
+        assert "run · Bash" in second              # the request itself
+        assert "pantheon:3" not in drawn["cells"][0]
+        assert "blocked - permission" not in drawn["cells"][0]
+        assert "last action" not in drawn["screen"]
+        assert drawn["table_width"] <= drawn["viewport_width"]
+
+
+def test_desk_row_says_done_then_idle_once_jumped_to(tmp_path, monkeypatch):
+    """`done` = finished and not looked at yet; a jump marks it seen and it reads `idle`."""
+    from pantheon import tmuxctl
+    fixture = [
+        {"ts": utcnow_iso(), "source": "claude", "event": "SessionStart",
+         "session_id": "abc12345deadbeef", "cwd": CWD, "tmux_pane": "%3"},
+        {"ts": utcnow_iso(), "source": "claude", "event": "Stop",
+         "session_id": "abc12345deadbeef", "cwd": CWD, "tmux_pane": "%3"},
+    ]
+    working = run_at(tmp_path, 120, windows=[PANTHEON_WINDOW], fixture=fixture[:1] + [
+        {"ts": utcnow_iso(), "source": "claude", "event": "PostToolUse", "tool_name": "Bash",
+         "session_id": "abc12345deadbeef", "cwd": CWD, "tmux_pane": "%3"}])
+    assert working["cells"][0].splitlines()[1].strip().endswith("· running a command")
+    monkeypatch.setattr(tmuxctl, "select_window", lambda *a, **k: True)
+    monkeypatch.setattr(tmuxctl, "display_message", lambda *a, **k: True)
+    # The seen mark takes the real clock, which is always at or after the stamps above.
+    before = run_at(tmp_path, 120, windows=[PANTHEON_WINDOW], fixture=fixture)
+    assert before["cells"][0].splitlines()[1].strip().startswith("done · claude")
+    after = run_at(tmp_path, 120, windows=[PANTHEON_WINDOW], fixture=fixture, keys=("j", "r"))
+    assert after["cells"][0].splitlines()[1].strip().startswith("idle · claude")
+    assert (tmp_path / "seen.json").exists()
+
+
+def test_plain_action_words_and_word_boundary_cuts():
+    assert pane_mod.plain_action("Bash") == "running a command"
+    assert pane_mod.plain_action("permission: Bash") == "wants to run a command"
+    assert pane_mod.plain_action("Claude needs your permission to use Edit") == "wants to edit a file"
+    assert pane_mod.plain_action("subagent: Read") == "helper agent reading a file"
+    assert pane_mod.plain_action("mcp__claude-in-chrome__navigate") == "using claude in chrome"
+    assert pane_mod.plain_action("turn done") == ""
+    assert pane_mod.plain_action("Claude is waiting for your input") == ""
+    assert pane_mod.plain_action("started from the deck") == "started from the deck"
+    assert pane_mod.clip_words("Claude is waiting for your input", 24) == "Claude is waiting for…"
+    assert pane_mod.clip_words("short", 24) == "short"
+
+
+def test_f_brings_back_the_table_and_does_nothing_on_the_phone(tmp_path):
+    table = run_at(tmp_path, 120, keys=("f",))
+    assert table["columns"][0] == "state"
+    assert "table view" in table["status"]
+    rows_again = run_at(tmp_path, 120, keys=("f", "f"))
+    assert rows_again["columns"] == ["agent"]
+    phone = run_at(tmp_path, 65, keys=("f",))
+    assert phone["columns"] == ["session"]
+    assert "one layout" in phone["status"]
 
 
 def test_where_names_the_tmux_window_when_there_is_one(tmp_path):
@@ -369,9 +437,13 @@ def test_a_row_dispatched_from_the_deck_renders(tmp_path):
     ]
     drawn = run_at(tmp_path, 120, fixture=fixture)
     assert drawn["rows"][0].tracker_id == "sprint-row-12"
-    assert drawn["cells"][3] == "started from the deck"
-    assert drawn["cells"][2] == "no window"
+    second = drawn["cells"][0].splitlines()[1].strip()
+    assert second.startswith("working · claude · hiking_log_v2")
+    assert second.endswith("started from the deck")
     assert "started from the deck" in drawn["screen"]
+    table = run_at(tmp_path, 120, fixture=fixture, keys=("f",))
+    assert table["cells"][3] == "started from the deck"
+    assert table["cells"][2] == "no window"
 
 
 # ---------------------------------------------------------------- row toolbar and controls
@@ -618,7 +690,7 @@ def test_model_is_refused_on_a_row_with_no_live_tmux_window(tmp_path, monkeypatc
 
 
 def test_w_width_adds_model_and_mode_columns(tmp_path):
-    drawn = run_at(tmp_path, 180, windows=[PANTHEON_WINDOW])
+    drawn = run_at(tmp_path, 180, windows=[PANTHEON_WINDOW], keys=("f",))   # the table view
     assert len(drawn["columns"]) == len(SUPER_WIDE_COLUMNS)
     assert drawn["columns"][-2:] == ["model", "mode"]
     assert drawn["cells"][-2] == "-"          # no statusline capture in this test

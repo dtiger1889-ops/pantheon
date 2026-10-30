@@ -7,6 +7,9 @@
 #   usage_mark after  --repo hiking_log_v2 --tokens 193277 --duration-ms 501107 --note "2 rows"
 #   usage_mark summary                                           # the batch line the BUDGET card shows
 #   usage_mark refit                                             # points per 100k tokens over every pair on file
+#   usage_mark after  --repo X --tokens N --size medium         # small|medium|large: the queue row's est_context;
+#                                                                #   the planner's per-size token estimate reads it (also on a
+#                                                                #   batch after; 5+ sized rows give a fitted range, fewer a wide one)
 #   usage_mark before --provider codex --repo X                  # a Codex worker; reads Codex's own log
 #   usage_mark before --batch --note "5 workers"                # ONE reading for workers launched together;
 #                                                                #   each worker's after (any --repo) pairs against it

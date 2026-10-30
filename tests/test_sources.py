@@ -327,6 +327,16 @@ def test_collect_falls_back_to_history_when_nothing_is_live(cfg, monkeypatch):
     assert picture["history"]["claude_pct"] == []
 
 
+def test_history_keeps_each_reading_with_its_window_reset_time():
+    previous = {"history": {"claude_samples": [["2026-09-01T00:00:00Z", 5.0]]}}
+    history = sources._history(previous, 6.0, "2026-09-01T00:05:00Z",
+                               claude_resets_at="2026-09-01T04:00:00Z")
+    assert history["claude_samples"] == [
+        ["2026-09-01T00:00:00Z", 5.0], ["2026-09-01T00:05:00Z", 6.0, "2026-09-01T04:00:00Z"]]
+    again = sources._history({"history": history}, 7.0, "2026-09-01T00:10:00Z")
+    assert len(again["claude_samples"]) == 3
+
+
 def test_history_keeps_the_last_thirty_readings():
     previous = {"history": {"claude_samples": [[f"2026-09-01T00:{i:02d}:00Z", i] for i in range(40)]}}
     history = sources._history(previous, 99.0, "2026-09-01T01:00:00Z")

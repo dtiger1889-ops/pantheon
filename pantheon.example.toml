@@ -96,6 +96,9 @@ account_read = true          # also read your account's own usage from Anthropic
 prompt_line = true           # one usage line in Claude's context before each prompt, once
                              # hooks/usage_line.py is registered; env PANTHEON_USAGE_LINE=0 beats it
 
+[deck]                       # the deck window itself
+tips = true                  # false = no rotating tip line above the key strip (desk width only)
+
 [assistant]                  # the pinned Assistant: one always-on Claude session, one
                              # long conversation, a line at the top of SESSIONS (A). Dispatch
                              # without the Desktop app.
@@ -116,6 +119,29 @@ credential_target = ""       # Windows Credential Manager target holding the bot
 poll_seconds = 25            # how long one getUpdates call waits for a new message
 reply_wait_seconds = 600     # how long it watches for the Assistant's answer before giving up
 max_age_minutes = 10         # older messages (a backlog after downtime) are not passed on
+
+[voice]                      # talk to the Assistant through a Home Assistant voice puck
+                             # (docs/voice-endpoint.md); run by `python -m pantheon.voice_endpoint`
+enabled = false              # true = the endpoint may start; false = it refuses to listen
+bind = "127.0.0.1"           # the address it listens on; Home Assistant on another machine needs
+                             # this PC's LAN or Tailscale address here
+port = 8765
+token_file = ""              # a file OUTSIDE this folder holding one line, the shared token (16+
+                             # characters); Home Assistant sends it as the API key. Never the token here.
+allow = ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+         "100.64.0.0/10", "fd7a:115c:a1e0::/48"]   # callers allowed in (localhost, private LAN,
+                             # Tailscale); narrow it to Home Assistant's own address when you can
+max_body_bytes = 262144      # bigger requests are refused
+reply_wait_seconds = 90      # how long the puck waits for the answer (capped at 480)
+max_reply_chars = 700        # longer answers are cut at a sentence; the rest stays in the Claude app
+pc_voice = "AvaNeural"       # Home Assistant Cloud voice for answers played on this PC
+ha_voice = "AvaNeural"       # ... and for answers played on a Home Assistant speaker
+
+[voice.speak_on]             # optional: where a puck's answer plays instead of the puck itself, by the
+                             # puck's Home Assistant name (needs the agent Instructions line in
+                             # docs/voice-endpoint.md). "pc" = this PC's speakers; "media_player.x" = that
+                             # Home Assistant speaker; "puck" or not listed = the puck. Example:
+# kitchen_puck = "pc"
 
 [sessions]                   # the SESSIONS sidebar
 # Conversations whose folder is one of these (or inside one) never show in the finished list and
@@ -140,6 +166,9 @@ planned_idle_minutes = 10    # ...and nobody has typed into any client for this 
 handle_exe = ""              # full path to Sysinternals handle64.exe for handle counts by type
 procdump_exe = ""            # full path to Sysinternals procdump.exe: a memory dump on a freeze
 command_log = true           # log every tmux command Pantheon sends (state/tmux-commands.log)
+server_log = false           # true = tmux's own server log (state/health/tmux-log/), read when the server ends; logs every drawn character (~4 MB/s) and lags every window
+server_log_mb = 64           # past this size the server log rolls over to .prev; at most two files per server
+freeze_log = true            # tmux's own log only while the server is not answering, off once it answers again
 alerts = ["deck", "toast", "ntfy"]   # ntfy uses [notify.ntfy] url and topic; never Telegram
 close_empty_minutes = 5      # close a tmux pane with no session in it (empty shell or dead pane) after this long unchanged; 0 = never
 

@@ -81,7 +81,10 @@ def evaluate(node: Node, row: TaskRow) -> bool:
     if node.kind == "or":
         return any(evaluate(c, row) for c in node.children)
     if node.kind == "not":
-        return not evaluate(node.children[0], row)
+        child = node.children[0]
+        if child.kind == "test" and child.unknown:
+            return True                    # an unread line never excludes anyone, negated or not
+        return not evaluate(child, row)
     return node.test(row)  # kind == "test"
 
 
@@ -110,12 +113,20 @@ def parse_node(block: Any) -> Node:
         return Node(kind="and", children=tuple(parse_node(b) for b in block))
     if isinstance(block, dict):
         if "and" in block:
-            return Node(kind="and", children=tuple(parse_node(b) for b in (block["and"] or [])))
+            return Node(kind="and", children=tuple(parse_node(b) for b in _child_list(block["and"])))
         if "or" in block:
-            return Node(kind="or", children=tuple(parse_node(b) for b in (block["or"] or [])))
+            return Node(kind="or", children=tuple(parse_node(b) for b in _child_list(block["or"])))
         if "not" in block:
             return Node(kind="not", children=(parse_node(block["not"]),))
     return _always_true(str(block) if block else "")
+
+
+def _child_list(value: Any) -> list:
+    """An `and`/`or` holds a list; a lone child (a scalar like `7` or `true`) is read as a list of
+    one, so it falls through to the "no rule" leaf rather than crashing the iteration."""
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
 
 
 def _leaf_node(text: str) -> Node:
@@ -195,12 +206,14 @@ def _compare(actual: Any, op: str, wanted: Any) -> bool:
         elif wanted is None:
             same = actual is None or str(actual).strip() == ""
         else:
-            same = str(actual or "").strip().lower() == str(wanted).strip().lower()
+            same = ("" if actual is None else str(actual)).strip().lower() == str(wanted).strip().lower()
         return same if op == "==" else not same
     left, right = _orderable(actual), _orderable(wanted)
     if left is None or right is None or not isinstance(left, type(right)):
         # Mixed number/text, or either side blank: fall back to a plain numeric attempt, else
-        # this row is left out rather than guessed into place.
+        # this row is left out rather than guessed into place. Booleans stay unorderable here too.
+        if isinstance(actual, bool) or isinstance(wanted, bool):
+            return False
         try:
             left, right = float(actual), float(wanted)
         except (TypeError, ValueError):

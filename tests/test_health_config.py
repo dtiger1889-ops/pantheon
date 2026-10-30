@@ -12,7 +12,7 @@ SPEC_DEFAULTS = {
     "auto_restart": True, "storm_minutes": 60, "snapshot_seconds": 300, "sample_seconds": 60,
     "warn_handles": 10000, "low_commit_percent": 90, "planned_restart": True,
     "planned_restart_handles": 20000, "planned_idle_minutes": 10, "handle_exe": "",
-    "procdump_exe": "", "command_log": True, "alerts": ["deck", "toast", "ntfy"],
+    "procdump_exe": "", "command_log": True, "server_log": False, "server_log_mb": 64, "freeze_log": True, "alerts": ["deck", "toast", "ntfy"],
     "close_empty_minutes": 5,
 }
 
@@ -28,6 +28,13 @@ def test_toml_merges_over_the_defaults(tmp_path):
     h = config.load(p).health_settings()
     assert h.enabled is False and h.warn_handles == 500 and h.alerts == ["toast"]
     assert h.command_log is False and h.probe_seconds == 30
+
+
+def test_pantheon_config_names_another_file(tmp_path, monkeypatch):
+    p = tmp_path / "other.toml"
+    p.write_text("[health]\nserver_log = true\n", encoding="utf-8")
+    monkeypatch.setenv("PANTHEON_CONFIG", str(p))
+    assert config.load().health_settings().server_log is True
 
 
 def test_example_toml_documents_every_key_at_its_default():

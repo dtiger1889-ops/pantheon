@@ -83,6 +83,9 @@ def frozen_clock(monkeypatch):
     # pass would read the machine's real Codex logs into the picture. The snapshot is of the
     # fixture, so the pass is switched off here.
     monkeypatch.setattr(hud_sources_mod, "refresh_if_stale", lambda *a, **k: None)
+    # The deck's tip line turns every TIP_ROTATE_S; held on its first tip so the desk snapshot
+    # can never catch it mid-rotation.
+    monkeypatch.setattr(deck_app_mod, "TIP_ROTATE_S", 24 * 3600.0)
     return FROZEN
 
 

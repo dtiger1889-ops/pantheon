@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# browser -- the browser lane: a Chrome, Edge or Firefox on its own automation profile (never
+# your everyday one) with a debugging port on 127.0.0.1, for agents on the SSH side.
+#   browser start [--browser chrome|msedge|firefox] [--profile NAME] [--headed] [--port N]
+#                                          prints the endpoint (any free port unless --port)
+#   browser status [--profile NAME] [--json]
+#   browser stop [--profile NAME]          ends only the recorded PID
+#   browser login URL [--browser B] [--profile NAME]   one-time sign-in on the desk
+# How agents attach: docs/browser-lane.md.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${PANTHEON_ROOT:-$HERE}"
+PY="$HERE/.venv/bin/python"
+export PATH="/c/msys64/usr/bin:/usr/bin:$PATH" MSYSTEM=MSYS
+cd "$ROOT" 2>/dev/null || { echo "pantheon root not found"; exit 1; }
+if [ ! -x "$PY" ]; then
+  echo "MSYS2 venv python not found"
+  exit 1
+fi
+exec "$PY" -m pantheon.browser_lane "$@"

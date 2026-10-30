@@ -202,21 +202,76 @@ def link_lost(screen: str) -> bool:
 _BUSY_MARKS = ("esc to interrupt", "esc to cancel")
 
 
-def idle_prompt(screen: str) -> bool:
+_SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+_ESC_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def strip_styles(styled: str) -> str:
+    """A `capture-pane -e` screen as plain text: colour/cursor codes and OSC links removed, so
+    one styled read can serve every check `idle_prompt` makes."""
+    return _ESC_RE.sub("", _OSC_RE.sub("", styled or ""))
+
+
+def _all_dim(styled_line: str) -> bool:
+    """Every visible character after the prompt cursor is drawn dim (SGR 2). Claude Code draws
+    its suggested next reply that way (`> ESC[2mSure, go ahead`); text the user typed is drawn
+    normal."""
+    dim, seen_cursor, pos = False, False, 0
+    for m in list(_SGR_RE.finditer(styled_line)) + [None]:
+        chunk = styled_line[pos:m.start() if m else len(styled_line)]
+        chunk = _ESC_RE.sub("", chunk)
+        for ch in chunk:
+            if not seen_cursor:
+                seen_cursor = ch in _CURSORS
+            elif not ch.isspace() and not dim:
+                return False
+        if m is None:
+            break
+        dim = _sgr_dim(m.group(1), dim)
+        pos = m.end()
+    return seen_cursor
+
+
+def _sgr_dim(params: str, dim: bool) -> bool:
+    """Whether text is dim after one SGR sequence. Colour groups (38/48/58 followed by `5;n` or
+    `2;r;g;b`) are skipped as units, so their own numbers never read as dim (2) or normal (22);
+    an empty parameter means 0, a full reset."""
+    codes = params.split(";") if params else [""]
+    i = 0
+    while i < len(codes):
+        c = codes[i] or "0"
+        if c in ("38", "48", "58"):
+            mode = codes[i + 1] if i + 1 < len(codes) else ""
+            i += {"5": 3, "2": 5}.get(mode, 2)
+            continue
+        if c in ("0", "22"):
+            dim = False
+        elif c == "2":
+            dim = True
+        i += 1
+    return dim
+
+
+def idle_prompt(screen: str, styled: Optional[str] = None) -> bool:
     """Claude Code is at its prompt with nothing typed and nothing running: the last box on
-    screen is the prompt (`>` then nothing, or only the dim `Try "..."` suggestion), no startup
-    question is up and no spinner line says a turn is in progress. The ONLY state Pantheon ever
-    types a command into."""
+    screen is the prompt (`>` then nothing, or only a dim suggestion: `Try "..."`, or, when the
+    `styled` capture (`capture-pane -e`) of the same screen is given, a dim suggested reply), no
+    startup question is up and no spinner line says a turn is in progress. The ONLY state
+    Pantheon ever types a command into."""
     lines = (screen or "").splitlines()
     rules = _rules(lines)
     if len(rules) < 2 or detect(screen) is not None:
         return False
-    box = [_clean(l) for l in lines[rules[-2] + 1:rules[-1]] if l.strip()]
+    box_at = [i for i in range(rules[-2] + 1, rules[-1]) if lines[i].strip()]
+    box = [_clean(lines[i]) for i in box_at]
     if len(box) != 1 or not box[0].startswith(_CURSORS):
         return False
     typed = box[0].lstrip("".join(_CURSORS)).strip()
     if typed and not typed.startswith('Try "'):
-        return False
+        styled_lines = (styled or "").splitlines()
+        if len(styled_lines) != len(lines) or not _all_dim(styled_lines[box_at[0]]):
+            return False
     before = _flat([l for l in lines[:rules[-2]] if l.strip()][-4:])
     return not any(mark in before for mark in _BUSY_MARKS)
 

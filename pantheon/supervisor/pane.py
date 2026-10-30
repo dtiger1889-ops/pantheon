@@ -57,6 +57,7 @@ from ..dispatch import sessions as sessions_mod
 from ..widgets.toolbar import Action, RowToolbar
 from ..session_view import approval as approval_mod
 from . import approvals as approvals_mod
+from . import seen as seen_mod
 from . import state as state_mod
 
 # Width thresholds, checked against the PANE's own content width. Textual has no breakpoints, so this is
@@ -324,6 +325,152 @@ def clip_line(text: str, width: int) -> str:
     return text if len(text) <= width else text[: max(0, width - 1)] + "…"
 
 
+def clip_words(text: str, width: int) -> str:
+    """Like `clip_line`, but the cut lands between words, never inside one (never "Claude is
+    waiting for yo…"). A single word longer
+    than the room is the only thing ever cut mid-word."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= width:
+        return text
+    if width <= 1:
+        return ""
+    cut = text[: width - 1]
+    space = cut.rfind(" ")
+    if space > 0:
+        cut = cut[:space]
+    return cut.rstrip(" ·,;:-") + "…"
+
+
+# THE PIT at desk width (D and W tiers), worded the way herdr words its agent list. Each agent is two
+# lines in one full-width column, no header: line 1 the glyph and the session's title (the same
+# title the sidebar shows), line 2 one state word in its own colour, then `· provider · project ·
+# age · what it is doing`. No `pantheon:N` address (the detail panel keeps `where`), and model and
+# mode live only in the detail panel. `f` swaps back to the old column table (`columns_for`).
+DESK_ROW_COLUMN = "agent"
+DESK_ROW_HEIGHT = 2
+
+
+def desk_columns(width: int) -> tuple:
+    return ((DESK_ROW_COLUMN, "agent", max(20, width - 4)),)
+
+
+def layout_for(width: int, table_view: bool = False) -> tuple:
+    """The pit's layout: two-line rows from the D tier up unless `f` asked for the table; the
+    phone and the N tier keep exactly what they had."""
+    if width >= WIDE_AT and not table_view:
+        return desk_columns(width)
+    return columns_for(width)
+
+
+# One word per state (herdr's working / blocked / waiting / done / idle, plus the few states herdr
+# has no word for). `done` = a turn or job finished and the user has not looked yet; once they
+# jump to it, it reads `idle` (`seen.py`).
+PIT_WORDS = {
+    AgentStatus.WORKING: "working",
+    AgentStatus.RUNNING: "working",
+    AgentStatus.BLOCKED_PERMISSION: "blocked",
+    AgentStatus.RESUME_FAILED: "blocked",
+    AgentStatus.WAITING_INPUT: "waiting",
+    AgentStatus.WINDING_DOWN: "stopping",
+    AgentStatus.IDLE: "done",
+    AgentStatus.DONE: "done",
+    AgentStatus.UNKNOWN: "idle",
+    AgentStatus.QUIET: "quiet",
+    AgentStatus.QUEUED: "queued",
+    AgentStatus.PARKED: "parked",
+    AgentStatus.FAILED: "failed",
+    AgentStatus.GONE: "gone",
+}
+# The colour of the word itself (theme tokens). Amber, never red, for a row that needs the user.
+PIT_WORD_STYLE = {
+    "working": "accent", "blocked": "warning", "waiting": "warning", "stopping": "warning",
+    "done": "success", "failed": "error",
+    "idle": "muted", "quiet": "muted", "queued": "muted", "parked": "muted", "gone": "muted",
+}
+TURN_DONE = "turn done"   # `state._fold_claude`'s words for a Stop event
+FINISHED_DETAIL = {"done": "done - finished, not looked at yet",
+                   "idle": "idle - finished, and you have looked"}
+
+
+def finished_turn(row: AgentState) -> bool:
+    """A turn or job that ended and is sitting there: the rows `done`/`idle` apply to."""
+    if row.status is AgentStatus.WAITING_INPUT:
+        return row.last_action == TURN_DONE   # a Stop; any other wait is a real question
+    return row.status in (AgentStatus.IDLE, AgentStatus.DONE)
+
+
+def pit_word(row: AgentState, seen: bool = False) -> str:
+    if finished_turn(row):
+        return "idle" if seen else "done"
+    return PIT_WORDS.get(row.status, row.status.value)
+
+
+# Tool names the hook records, as plain words: (doing it, wanting to do it).
+TOOL_WORDS = {
+    "bash": ("running a command", "run a command"),
+    "powershell": ("running a command", "run a command"),
+    "bashoutput": ("checking a command", "check a command"),
+    "killshell": ("stopping a command", "stop a command"),
+    "monitor": ("watching a command", "watch a command"),
+    "read": ("reading a file", "read a file"),
+    "edit": ("editing a file", "edit a file"),
+    "multiedit": ("editing a file", "edit a file"),
+    "write": ("writing a file", "write a file"),
+    "notebookedit": ("editing a notebook", "edit a notebook"),
+    "grep": ("searching files", "search files"),
+    "glob": ("looking for files", "look for files"),
+    "webfetch": ("reading a web page", "read a web page"),
+    "websearch": ("searching the web", "search the web"),
+    "task": ("running a helper agent", "start a helper agent"),
+    "agent": ("running a helper agent", "start a helper agent"),
+    "sendmessage": ("messaging a helper agent", "message a helper agent"),
+    "todowrite": ("updating its to-do list", "update its to-do list"),
+    "skill": ("using a skill", "use a skill"),
+    "toolsearch": ("loading tools", "load tools"),
+    "exitplanmode": ("showing a plan", "show you a plan"),
+    "askuserquestion": ("asking you a question", "ask you a question"),
+}
+# Last actions the state word already says; the row drops them rather than repeat it.
+_SAID_BY_THE_WORD = {"", "-", TURN_DONE, "no events yet", "claude is waiting for your input"}
+_NEEDS_PERMISSION = "claude needs your permission to use "
+
+
+def _tool_words(tool: str) -> tuple[str, str]:
+    name = (tool or "").strip()
+    key = name.lower()
+    if key in TOOL_WORDS:
+        return TOOL_WORDS[key]
+    if key.startswith("mcp__"):
+        server = key.split("__")[1] if key.count("__") >= 1 else ""
+        for prefix in ("claude_ai_", "plugin_"):
+            if server.startswith(prefix):
+                server = server[len(prefix):]
+        server = server.replace("_", " ").replace("-", " ").strip() or "a connector"
+        return f"using {server}", f"use {server}"
+    return f"using {name}", f"use {name}"
+
+
+def plain_action(text: Optional[str]) -> str:
+    """What the agent is doing, in words: `Bash` -> `running a command`, `permission: Bash` ->
+    `wants to run a command`. Anything already in words passes through unchanged."""
+    t = " ".join(str(text or "").split())
+    low = t.lower()
+    if low in _SAID_BY_THE_WORD:
+        return ""
+    if low.startswith("permission: "):
+        return f"wants to {_tool_words(t[len('permission: '):])[1]}"
+    if low.startswith(_NEEDS_PERMISSION):
+        return f"wants to {_tool_words(t[len(_NEEDS_PERMISSION):])[1]}"
+    if low.startswith("subagent: "):
+        return f"helper agent {_tool_words(t[len('subagent: '):])[0]}"
+    if low.startswith("codex exec"):
+        rest = t[len("codex exec"):].strip()
+        return f"headless job {rest}".strip()
+    if " " not in t and (low in TOOL_WORDS or low.startswith("mcp__")):
+        return _tool_words(t)[0]
+    return t
+
+
 def state_cell(row: AgentState, glyphs: dict[str, str]) -> str:
     """`!! blocked - permission`, `● working`, `▲ waiting - needs input`. Words always present."""
     if row.status in (AgentStatus.BLOCKED_PERMISSION, AgentStatus.RESUME_FAILED):
@@ -511,6 +658,9 @@ class SupervisorPane(KeepAlive, Widget):
         ("e", "effort", "effort"),
         ("p", "mode", "mode"),
         ("l", "log", "log"),
+        # Desk widths: two-line rows (the default) or the old column table. Not a row action,
+        # so it has no toolbar button (tests/test_ui_controls.py lists it as pane-wide).
+        Binding("f", "toggle_view", "rows or table", show=False),
         Binding("a", "allow", "allow once", show=False),
         Binding("d", "deny", "deny", show=False),
         Binding("v", "view_request", "see all of it", show=False),
@@ -581,6 +731,10 @@ class SupervisorPane(KeepAlive, Widget):
         # session_id -> (monotonic deadline, UTC time `/checkpoint` was typed) for
         # each `H` hand-off still waiting on its old session; a second `H` never types it twice.
         self._handoff_waits: dict[str, tuple[float, datetime]] = {}
+        # Desk widths: False = two-line rows (default), True = the old column table (`f`).
+        self._table_view = False
+        # When the user last jumped to each session: `done` reads `idle` once they have (`seen.py`).
+        self.seen = seen_mod.SeenMarks(self.cfg.state_dir)
 
     # ------------------------------------------------------------------ layout
 
@@ -619,17 +773,17 @@ class SupervisorPane(KeepAlive, Widget):
         # with no matching column-tuple change should never happen given today's thresholds, but
         # this stays correct even if that ever stops being true.
         self._set_detail_visible(width >= WIDE_AT)
-        wanted = columns_for(width)
+        wanted = layout_for(width, self._table_view)
         if wanted == self._columns:
             return False
         self._columns = wanted
         self._age_index = next((i for i, (key, _l, _w) in enumerate(wanted) if key == "age"), None)
-        if self._phone_rows():
+        if self._two_line_rows():
             # The one cell holds the age too: a changed cell is patched in place, never a rebuild.
             self._age_index = 0
         table = self.query_one("#agents", DataTable)
         table.clear(columns=True)
-        table.show_header = not self._phone_rows()
+        table.show_header = not self._two_line_rows()
         for key, label, w in wanted:
             table.add_column(label, width=w, key=key)
         self._row_keys = []
@@ -750,6 +904,56 @@ class SupervisorPane(KeepAlive, Widget):
     def _phone_rows(self) -> bool:
         return bool(self._columns) and self._columns[0][0] == PHONE_ROW_COLUMN
 
+    def _desk_rows(self) -> bool:
+        return bool(self._columns) and self._columns[0][0] == DESK_ROW_COLUMN
+
+    def _two_line_rows(self) -> bool:
+        return self._phone_rows() or self._desk_rows()
+
+    def _row_seen(self, row: AgentState) -> bool:
+        if not finished_turn(row):
+            self.seen.saw_unfinished(row)
+            return False
+        return self.seen.seen(row)
+
+    def _style_for(self, row: AgentState) -> Optional[str]:
+        """The row's colour role; at desk width a finished row the user has already looked at
+        (`idle`) goes grey like any other idle row."""
+        if self._desk_rows() and self._row_seen(row):
+            return "muted"
+        return row_style(row)
+
+    def _desk_cell(self, row: AgentState, now: datetime) -> str:
+        """Two lines, herdr's wording: glyph + title, then `word · provider · project · age ·
+        what it is doing`. Each line is cut between words, never wrapped."""
+        width = self._columns[0][2]
+        word = pit_word(row, self._row_seen(row))
+        if row.status in (AgentStatus.BLOCKED_PERMISSION, AgentStatus.RESUME_FAILED):
+            glyph = "!!"
+        elif word == "done":
+            glyph = self.glyphs.get("ok", "")
+        elif word == "idle":
+            glyph = self.glyphs.get("idle", "")
+        else:
+            glyph = self.glyphs.get(_GLYPH_FOR.get(row.status, "idle"), "")
+        first = clip_words(f"{glyph} {self._row_title(row)}".strip(), width)
+        # The Assistant's title already says what it is; its folder is wherever it last worked.
+        project = "" if row.session_id in self._assistant_ids else (row.project or "")
+        parts = [word, row.provider or "", project, format_age(row.age_seconds(now))]
+        base = " · ".join(p for p in parts if p)
+        room = width - 2 - len(base) - len(" · ")
+        doing = ""
+        shown = self.approvals.shown.get(row.session_id)
+        if shown is not None and room >= 8:
+            # The request itself, cut only at the end with `… +N` (never a silent cut).
+            doing = shown.line(room, self._ascii)[0]
+        elif room >= 8:
+            doing = clip_words(plain_action(row.last_action), room)
+            if doing == "…":
+                doing = ""
+        second = clip_words(base + (f" · {doing}" if doing else ""), width - 2)
+        return first + "\n  " + second
+
     def _row_title(self, row: AgentState) -> str:
         """The same title the desk sidebar shows: a rename first, then Claude's own title, then
         the first thing typed; `untitled <project>` when there is nothing. The Assistant's row is
@@ -806,6 +1010,8 @@ class SupervisorPane(KeepAlive, Widget):
         the table for the detail panel, so they are no longer built here."""
         if self._phone_rows():
             return [self._phone_cell(row, now)]
+        if self._desk_rows():
+            return [self._desk_cell(row, now)]
         values = {
             "state": state_cell(row, self.glyphs),
             # The Assistant's folder is wherever it last worked, so it read as a second project
@@ -838,7 +1044,7 @@ class SupervisorPane(KeepAlive, Widget):
         table = self.query_one("#agents", DataTable)
         now = datetime.now(timezone.utc)
         new_keys = [row.session_id for row in self.table_rows]
-        new_styles = [row_style(row) for row in self.table_rows]
+        new_styles = [self._style_for(row) for row in self.table_rows]
         new_cells = [self._cell_values(row, now) for row in self.table_rows]
 
         if self._rebuild_can_be_skipped(new_keys, new_styles, new_cells):
@@ -860,7 +1066,7 @@ class SupervisorPane(KeepAlive, Widget):
         self._row_keys = []
         for row, style, cells in zip(self.table_rows, new_styles, new_cells):
             table.add_row(*(self._paint(c, style) for c in cells), key=row.session_id,
-                          height=PHONE_ROW_HEIGHT if self._phone_rows() else 1)
+                          height=PHONE_ROW_HEIGHT if self._two_line_rows() else 1)
             self._row_keys.append(row.session_id)
 
         if keep is not None and keep in self._row_keys:
@@ -885,6 +1091,10 @@ class SupervisorPane(KeepAlive, Widget):
             return
         pane_height = self.size.height or (self.app.size.height if self.app else 24)
         half = max(4, pane_height // 2)
+        if self._desk_rows():
+            wanted = min(DESK_ROW_HEIGHT * len(self.table_rows), half)   # two lines each, no header
+            table.styles.height = max(DESK_ROW_HEIGHT, wanted)
+            return
         wanted = min(len(self.table_rows) + 1, half)   # `+ 1`: the header row
         table.styles.height = max(3, wanted)
 
@@ -927,11 +1137,21 @@ class SupervisorPane(KeepAlive, Widget):
                 return Text(text)
             colour = theme_mod.TOKENS.get(style, "")
             return Text(text, style=f"bold {colour}" if style == "error" else colour)
-        # A phone row: the first line takes the row's colour, the second is always dim.
+        # A two-line row: the first line takes the row's colour, the second is dim -- except, at
+        # desk width, its state word, which is painted in that state's own colour.
         colour = theme_mod.TOKENS.get(style, "") if style else ""
+        dim = theme_mod.TOKENS.get("muted", "") or "dim"
         out = Text(first, style=(f"bold {colour}" if style == "error" else colour) or "",
                    no_wrap=True, overflow="ellipsis")
-        out.append("\n" + rest, style=theme_mod.TOKENS.get("muted", "") or "dim")
+        if self._desk_rows():
+            indent = rest[: len(rest) - len(rest.lstrip())]
+            word, sep2, tail = rest.lstrip().partition(" · ")
+            word_colour = theme_mod.TOKENS.get(PIT_WORD_STYLE.get(word, "muted"), "") or dim
+            out.append("\n" + indent)
+            out.append(word, style=f"bold {word_colour}")
+            out.append(sep2 + tail, style=dim)
+            return out
+        out.append("\n" + rest, style=dim)
         return out
 
     def _update_header(self) -> None:
@@ -1072,6 +1292,13 @@ class SupervisorPane(KeepAlive, Widget):
             out.append((e, format_age(age)))
         return out
 
+    def detail_state(self, row: AgentState) -> str:
+        """The detail box's state line: the row's own long label, except for a finished turn,
+        which says the same `done`/`idle` the row does instead of `waiting - needs input`."""
+        if finished_turn(row):
+            return FINISHED_DETAIL[pit_word(row, self._row_seen(row))]
+        return row.status.label
+
     def _detail_body(self, row: AgentState) -> Text:
         now = datetime.now(timezone.utc)
         dim = theme_mod.TOKENS["dim"]
@@ -1080,7 +1307,7 @@ class SupervisorPane(KeepAlive, Widget):
         shown = self.approvals.shown.get(row.session_id)
         if shown is not None:
             self._append_request(text, row, shown)
-        text.append(row.status.label, style="bold")
+        text.append(self.detail_state(row), style="bold")
         text.append("   ")
         text.append(format_age(row.age_seconds(now)), style=dim)
         text.append("\n")
@@ -1864,6 +2091,7 @@ class SupervisorPane(KeepAlive, Widget):
             return self.say("no agent selected")
         if row.in_pantheon and row.window_index is not None:
             if tmuxctl.select_window(self.cfg.tmux_session, row.window_index, self.cfg.tools.tmux):
+                self.seen.mark(row.session_id)   # a finished row now reads `idle`, not `done`
                 self._hint_back_key(row.window_index)
                 return self.say(f"jumped to window {row.window_index}")
             return self.say("tmux would not switch window", role="warning")
@@ -1871,10 +2099,22 @@ class SupervisorPane(KeepAlive, Widget):
         if w is not None and w.session and tmuxctl.switch_client(
             w.session, self.cfg.tools.tmux, from_session=self.cfg.tmux_session
         ):
+            self.seen.mark(row.session_id)
             return self.say(f"jumped to session {w.session}")
         if row.window_index is None:
             return self.say(NOT_IN_TMUX_JUMP, role="warning")
         self.say("that agent is in another tmux - could not switch to it", role="warning")
+
+    def action_toggle_view(self) -> None:
+        """`f`: at desk width, swap the two-line rows for the old column table and back."""
+        width = self.size.width or self.app.size.width
+        if width < WIDE_AT:
+            return self.say("f swaps rows and table on a desk-wide pit; this width has one layout")
+        self._table_view = not self._table_view
+        if self._apply_columns(width):
+            self.redraw()
+        self.say("table view - f goes back to rows" if self._table_view
+                 else "rows view - f shows the table")
 
     def _hint_back_key(self, window_index: int) -> None:
         """the first thing the user used to see after `j` landed him in a stock agent

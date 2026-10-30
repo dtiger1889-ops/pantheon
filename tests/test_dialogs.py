@@ -141,3 +141,86 @@ def test_a_dialog_with_no_one_key_yes_is_never_answered_yes():
     pane = FakePane(screen=MCP)
     ok, why = _answer(pane)
     assert not ok and pane.keys == []
+
+
+# A real Assistant screen shape: Claude Code's dim suggested reply sat in the prompt and
+# the voice puck's request was refused as "busy". Same screen plain and with colour codes.
+_RULE = "─" * 60
+SUGGESTED = f"""\
+● The garden note is now saved in your notes.
+{_RULE}
+>\xa0No, leave it for now
+{_RULE}
+  5h 19% · wk 19% · ctx 25% · $6.46 · Opus 5.5
+"""
+SUGGESTED_STYLED = SUGGESTED.replace(">\xa0No, leave it for now",
+                                     "\x1b[39m>\xa0\x1b[2mNo, leave it for now\x1b[0m")
+TYPED_STYLED = SUGGESTED.replace(">\xa0No, leave it for now",
+                                 "\x1b[39m>\xa0No, leave it for now\x1b[0m")
+
+
+def test_a_dim_suggested_reply_counts_as_an_empty_prompt():
+    assert not dialogs.idle_prompt(SUGGESTED)              # without colours it looks typed
+    assert dialogs.idle_prompt(SUGGESTED, styled=SUGGESTED_STYLED)
+
+
+def test_text_drawn_normally_is_still_typed_text():
+    assert not dialogs.idle_prompt(SUGGESTED, styled=TYPED_STYLED)
+    half = SUGGESTED_STYLED.replace("\x1b[2mNo,", "No,\x1b[2m")   # only part of it dim
+    assert not dialogs.idle_prompt(SUGGESTED, styled=half)
+
+
+def _styled_prompt(sgr: str) -> str:
+    return SUGGESTED.replace(">\xa0No, leave it for now", f"\x1b[39m>\xa0\x1b[{sgr}mNo, leave it for now\x1b[0m")
+
+
+def test_a_true_colour_group_is_not_read_as_dim():
+    # The 2 inside 38;2;r;g;b is the colour mode, not dim.
+    assert not dialogs.idle_prompt(SUGGESTED, styled=_styled_prompt("38;2;100;100;100"))
+    assert not dialogs.idle_prompt(SUGGESTED, styled=_styled_prompt("38;5;2"))
+    assert dialogs.idle_prompt(SUGGESTED, styled=_styled_prompt("2;38;2;22;22;22"))   # dim, grey
+
+
+def test_an_empty_sgr_parameter_resets_dim():
+    # `2;;37` is dim, then reset (empty = 0), then white.
+    assert not dialogs.idle_prompt(SUGGESTED, styled=_styled_prompt("2;;37"))
+
+
+def test_stripping_a_styled_screen_gives_its_plain_text():
+    assert dialogs.strip_styles(SUGGESTED_STYLED) == SUGGESTED
+    assert dialogs.strip_styles("\x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\") == "link"
+
+
+def test_a_turn_that_started_before_the_styled_read_blocks_the_paste(monkeypatch):
+    # The first read shows a dim suggestion, but by the
+    # styled read a turn is running; the paste must judge the newer screen, not the old one.
+    from pantheon import assistant_telegram as tg
+    running = SUGGESTED_STYLED.replace("● The garden note", "✻ Thinking… (esc to interrupt)\n● The garden note")
+    calls = []
+
+    class Ran:
+        returncode = 0
+        stdout = running
+
+    monkeypatch.setattr(tg.tmuxctl, "run", lambda *a, **k: calls.append(a) or Ran())
+    state = tg.paste_when_idle("%7", "hi", capture=lambda p, tmux=None: SUGGESTED, sleep=lambda s: None)
+    assert state == "busy"
+    assert all(a[0] == "capture-pane" for a in calls)
+
+
+def test_the_same_suggestion_in_the_styled_read_lets_the_paste_through(monkeypatch):
+    from pantheon import assistant_telegram as tg
+    calls = []
+
+    class Ran:
+        returncode = 0
+        stdout = SUGGESTED_STYLED
+
+    monkeypatch.setattr(tg.tmuxctl, "run", lambda *a, **k: calls.append(a) or Ran())
+    state = tg.paste_when_idle("%7", "hi", capture=lambda p, tmux=None: SUGGESTED, sleep=lambda s: None)
+    assert state == "sent"
+    assert [a[0] for a in calls][1:] == ["set-buffer", "paste-buffer", "send-keys"]
+
+
+def test_a_styled_read_of_a_different_screen_is_ignored():
+    assert not dialogs.idle_prompt(SUGGESTED, styled="\x1b[2m> x\x1b[0m\n")

@@ -242,22 +242,6 @@ def project_window(current_pct: Optional[float], burn_per_hour: Optional[float],
         return None
 
 
-def _clean(samples) -> list[tuple[float, float]]:
-    out: list[tuple[float, float]] = []
-    for item in samples or ():
-        if not item or len(item) < 2:
-            continue
-        t = calc._as_epoch(item[0])
-        if t is None or item[1] is None:
-            continue
-        try:
-            out.append((t, float(item[1])))
-        except (TypeError, ValueError):
-            continue
-    out.sort(key=lambda p: p[0])
-    return out
-
-
 def burn_band(samples, now: Optional[float] = None,
               window_seconds: int = calc.BURN_WINDOW_SECONDS) -> Optional[dict]:
     """The burn rate with the range its readings allow: `{mid, low, high, readings, hours}` in
@@ -268,23 +252,16 @@ def burn_band(samples, now: Optional[float] = None,
     mid = calc.burn_pct_per_hour(samples, window_seconds=window_seconds, now=now)
     if mid is None:
         return None
-    clean = _clean(samples)
     # The same tail calc measured over: the rising run since the last reset, inside the window.
-    tail = [clean[-1]]
-    for t, pct in reversed(clean[:-1]):
-        if pct > tail[0][1]:
-            break
-        tail.insert(0, (t, pct))
-    newest = tail[-1][0]
-    tail = [(t, p) for t, p in tail if newest - t <= window_seconds]
-    hours = (tail[-1][0] - tail[0][0]) / 3600.0
-    if len(tail) < 2 or hours <= 0:
+    tail = calc.rising_tail(calc.clean_samples(samples), window_seconds)
+    hours = (tail[-1][0] - tail[0][0]) / 3600.0 if len(tail) >= 2 else 0.0
+    if hours <= 0:
         return None
     delta = tail[-1][1] - tail[0][1]
     return {
         "mid": mid,
         "low": max(0.0, delta - 1.0) / hours,
-        "high": (delta + 1.0) / hours,
+        "high": max(0.0, delta + 1.0) / hours,
         "readings": len(tail),
         "hours": hours,
     }

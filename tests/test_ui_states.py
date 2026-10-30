@@ -277,6 +277,9 @@ async def test_every_agent_status_renders_at_every_width(tmp_path, status, size)
         label = pane_mod.phone_status_word(status)
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
+        if size[0] >= pane_mod.WIDE_AT:
+            # Desk widths: the herdr two-line rows say one word per state.
+            label = pane_mod.pit_word(app.pane.rows[0])
         table = app.query_one("#agents", DataTable)
         assert table.row_count == 1
         cell_text = _cell_text(table, 0, 0)
@@ -332,18 +335,22 @@ def _run_ansi(tmp_path: Path, width: int, height: int, fixture: list[dict], wind
             await pilot.pause()
             out["native_ansi"] = app.native_ansi_color
             out["text"] = screen_text(app.export_screenshot())
+            out["row"] = app.pane.rows[0] if app.pane.rows else None
 
     asyncio.run(drive())
-    return out["text"], out["native_ansi"]
+    return out["text"], out["native_ansi"], out["row"]
 
 
 @pytest.mark.parametrize("status", AGENT_STATUS_PARAMS, ids=[s.value for s in AGENT_STATUS_CASES])
 def test_every_agent_status_survives_16_colours(tmp_path, status):
     events, windows = AGENT_STATUS_CASES[status]
     events = _stamped_events(status, events)
-    text, native_ansi = _run_ansi(tmp_path, 120, 40, events, windows)
+    text, native_ansi, row = _run_ansi(tmp_path, 120, 40, events, windows)
     assert native_ansi is True                            # confirms the switch actually took
-    assert status.label in text
+    # 120 is a desk width: the row's one word, and the detail box's line beside it.
+    assert pane_mod.pit_word(row) in text
+    if not pane_mod.finished_turn(row):
+        assert status.label in text
 
 
 # ==================================================================================================
@@ -603,7 +610,11 @@ def test_resume_failed_reaches_the_screen_with_its_marker(tmp_path):
     events = _events_now(events)
     drawn = run_supervisor_at(tmp_path, 120, fixture=events)
     label = AgentStatus.RESUME_FAILED.label
-    assert f"!! {label}" in drawn["cells"][0]
+    # Desk width: `!!` on the title line, `blocked` as its word, and the reason after.
+    first, second = drawn["cells"][0].splitlines()
+    assert first.startswith("!! ")
+    assert second.strip().startswith("blocked · ")
+    assert "resume failed - needs you" in second
     assert label in drawn["screen"]
 
 

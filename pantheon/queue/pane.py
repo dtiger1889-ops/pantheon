@@ -589,6 +589,11 @@ class QueuePane(KeepAlive, Widget):
 
     def _header_extras(self, tab_counts: list[int]) -> list[str]:
         extras = []
+        if self.drilled_project and not self.has_class("framed"):
+            # Drilled, the project is named here unless the standalone frame's title already
+            # names it: the 65-column QUEUE window draws no frame, and the deck's panel title
+            # names only the tab.
+            extras.append(f"CHECKPOINT: {self.drilled_project}")
         if self.project_filter:
             extras.append(f"project: {self.project_filter}")
         if self.search_text:

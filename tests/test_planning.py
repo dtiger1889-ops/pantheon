@@ -146,6 +146,18 @@ def test_burn_band_is_calc_burn_with_a_whole_number_range():
     assert band["readings"] == 3
 
 
+def test_burn_band_measures_the_same_readings_as_calc_through_a_wobble():
+    # A one-point dip once ended only this walk: the card read `72% (78-83%)`, mid outside its range.
+    band = P.burn_band(_samples((20, 45), (10, 46), (5, 48), (0, 47)), now=NOW.timestamp())
+    assert band["readings"] == 4
+    assert band["low"] <= band["mid"] <= band["high"]
+
+
+def test_burn_band_on_a_flat_wobble_is_zero_with_no_negative_range():
+    band = P.burn_band(_samples((6, 46), (4, 45), (2, 46), (0, 45)), now=NOW.timestamp())
+    assert band["mid"] == 0.0 and band["low"] == 0.0 and band["high"] == 0.0
+
+
 def test_burn_band_none_when_calc_has_no_burn():
     assert P.burn_band([], now=NOW.timestamp()) is None
     assert P.burn_band(_samples((0, 12)), now=NOW.timestamp()) is None

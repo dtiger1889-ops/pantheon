@@ -99,6 +99,13 @@ def resolve(cfg: config_mod.Config, which: Callable[[str], Optional[str]] = shut
     return Editor(problem=NOT_FOUND)
 
 
+def vscode_bridge_enabled(cfg: config_mod.Config) -> bool:
+    """`[editor] vscode_bridge = true` in `pantheon.toml` (default false until
+    the Scheduled Task is registered). Only a real boolean true counts: the string "false" or
+    a stray value leaves the deck behaving as it did before the switch existed."""
+    return (cfg.editor or {}).get("vscode_bridge") is True
+
+
 def command_line(editor: Editor, path: str, line: Optional[int] = None) -> str:
     """The shell line tmux runs in the new pane. `line` is added only for editors known to take
     it (`+N file` for micro/nano/nvim/vim, `file:N` for helix); any other editor just opens the

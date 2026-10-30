@@ -201,6 +201,26 @@ async def test_d_key_drills_the_highlighted_rows_project(tmp_path, monkeypatch):
 
 
 @drives_the_screen
+async def test_unframed_queue_window_names_the_drilled_project_in_its_header(tmp_path):
+    """The 65-column QUEUE window draws no frame, so its border title never showed; the header
+    names the drilled project there, and the framed desk width leaves it to the title alone."""
+    app = _app(tmp_path)
+    async with app.run_test(size=(65, 25)) as pilot:
+        await pilot.pause()
+        app.pane.drill("habit_notes", source=_fake_source("habit_notes"))
+        await pilot.pause()
+        header = str(app.pane.query_one("#header").render())
+        assert "CHECKPOINT: habit_notes" in header
+    wide = _app(tmp_path, name="vault2")
+    async with wide.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        wide.pane.drill("habit_notes", source=_fake_source("habit_notes"))
+        await pilot.pause()
+        assert wide.pane.border_title == "QUEUE · CHECKPOINT: habit_notes"
+        assert "CHECKPOINT: habit_notes" not in str(wide.pane.query_one("#header").render())
+
+
+@drives_the_screen
 async def test_drill_with_no_project_on_the_row_says_so_instead_of_drilling(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

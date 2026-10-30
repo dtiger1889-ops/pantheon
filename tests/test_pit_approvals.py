@@ -249,7 +249,9 @@ def test_1_a_bash_prompt_shows_its_exact_command_and_v_shows_all_of_it(tmp_path,
             await pilot.pause()
 
     asyncio.run(drive())
-    assert any("run · Bash · echo" in c and "… +" in c for c in seen["cells"])
+    # The desk's two-line row has room for the whole command at 200 columns; a longer one is
+    # still cut only at the end with `… +N`.
+    assert any("run · Bash · echo" in c and (PROBE_CMD in c or "… +" in c) for c in seen["cells"])
     assert "▲ run · Bash · " + PROBE_CMD in seen["detail"]
     assert "a allow once · d deny · v see all of it · j go to the window" in seen["detail"]
     assert "    " + PROBE_CMD in seen["view"]

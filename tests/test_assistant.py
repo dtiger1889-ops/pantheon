@@ -97,10 +97,11 @@ def make_cfg(tmp_path, **assistant) -> config_mod.Config:
     return cfg
 
 
-def session_start(cfg, session_id: str, pane: str, transcript: str = "", detail: str = "startup") -> None:
+def session_start(cfg, session_id: str, pane: str, transcript: str = "", detail: str = "startup",
+                  cwd: str = ROOT) -> None:
     from pantheon import eventcache
     line = {"ts": utcnow_iso(), "source": "claude", "event": "SessionStart", "session_id": session_id,
-            "cwd": ROOT, "detail": detail, "tmux_pane": pane, "transcript_path": transcript}
+            "cwd": cwd, "detail": detail, "tmux_pane": pane, "transcript_path": transcript}
     with open(cfg.events_file, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(line) + "\n")
     eventcache._cache = None
@@ -189,6 +190,20 @@ def test_a_session_start_from_another_pane_or_before_the_start_is_not_learned(tm
     assert assistant_mod.learn(cfg) is None
     session_start(cfg, "mine", result["pane_id"])
     assert assistant_mod.learn(cfg) == "mine"
+
+
+def test_a_project_session_reusing_the_assistant_pane_number_is_not_learned(tmp_path, monkeypatch):
+    # After a freeze restart, another project's resumed session got the pane number the
+    # Assistant record still held, and was adopted as the Assistant.
+    fake = FakeTmux()
+    install(monkeypatch, fake)
+    cfg = make_cfg(tmp_path)
+    result = assistant_mod.ensure(cfg, provider=FakeProvider(fake), sleep=no_sleep, learn_wait=0)
+    session_start(cfg, "mine", result["pane_id"])
+    assert assistant_mod.learn(cfg) == "mine"
+    session_start(cfg, "game-modding", result["pane_id"], detail="resume", cwd=ROOT + "/game_modding")
+    assert assistant_mod.learn(cfg) == "mine"
+    assert assistant_mod.read_state(cfg)["session_id"] == "mine"
 
 
 def test_a_clear_inside_the_assistant_moves_the_saved_id_to_the_new_conversation(tmp_path, monkeypatch):

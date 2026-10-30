@@ -25,7 +25,7 @@ SPEC_KEY_ONLY = {
 } | {str(n) for n in range(1, 10)}
 
 # Pane-wide actions with no row to attach a toolbar button to -- named, not waved through.
-SUPERVISOR_EXTRA_KEY_ONLY = {"r"}                              # refresh the whole list
+SUPERVISOR_EXTRA_KEY_ONLY = {"r", "f"}   # refresh the whole list; rows or table (whole pane)
 QUEUE_EXTRA_KEY_ONLY = {"r", "p", "j", "k", "escape", "slash", "d", "D"}
 # refresh, project filter, up/down aliases, back, open search, and drill/un-drill: a
 # whole-pane source swap, not a per-row action, so it has no row-toolbar button by design.

@@ -10,11 +10,12 @@ When I run several agents in parallel on a subscription plan, the hard part is k
 
 ## Features
 
-- **THE PIT**: a live table of every Claude Code session and Codex job with its state, project, last action and age. Sessions waiting on you are flagged from Claude Code's own hook events, not guessed from silence. Jump to, answer, kill, or hand off any session from its row.
+- **THE PIT**: every Claude Code session and Codex job, two lines each at desk width: its title, then one state word (working, blocked, waiting, done, idle) with provider, project, age and what it is doing in plain words. `done` turns to `idle` once you've looked at it, and `f` swaps to a column table. Sessions waiting on you are flagged from Claude Code's own hook events, not guessed from silence. Jump to, answer, kill, or hand off any session from its row.
 - **Sessions**: your projects with their running and finished conversations. Start a new session with the model, effort and permission mode already set, or schedule one for later.
 - **Queue**: your task list read straight from an Obsidian vault (task notes plus a `.base` file for the tabs), or from a plain Markdown folder. Pick a task and launch an agent on it with a briefing built from the note.
-- **Budget**: 5-hour and weekly usage, burn rate, time to the limit and cost per day, built from local logs and Claude Code's status line. No reverse-engineered API calls.
-- **Assistant**: an always-on session pinned in its own window, reachable from your phone through Claude's Remote Control.
+- **Budget**: 5-hour and weekly usage, burn rate, time to the limit and cost per day, built from local logs and Claude Code's status line. No reverse-engineered API calls. `U` opens a planning page that lays queue rows against both limits.
+- **Assistant**: an always-on session pinned in its own window, reachable from your phone through Claude's Remote Control, and optionally by voice through a Home Assistant voice puck (`docs/voice-endpoint.md`).
+- **Tip line**: at desk width, one row above the key strip names a key that works right now but isn't on the strip. `[deck] tips = false` hides it.
 
 ## From your phone
 
@@ -76,7 +77,7 @@ If your vault uses a different folder, point `base_file` in `pantheon.toml` at y
 To feed THE PIT and the Budget card, register these in `~/.claude/settings.json` (each file's header shows how):
 
 - `hooks/pantheon_event.ps1` as a hook for SessionStart, PostToolUse, Stop, SessionEnd, Notification and PermissionRequest
-- `bin/statusline_capture` as the `statusLine` command
+- `hooks/statusline.py` as the `statusLine` command (one Python process per refresh; `bin/statusline_capture` still works)
 
 ## Usage
 
@@ -89,7 +90,11 @@ bin/pantheon --restart --all   # restart everything once every agent is between 
 
 `bin/pantheon-delegate "<task>"` lets a Codex session hand a task to a Claude worker. With the deck running, the worker opens as a new deck window; without it, the task goes to a fallback command you supply, named by the `PANTHEON_DELEGATE_FALLBACK` environment variable (`pantheon/dispatch/delegate.py` describes the arguments it receives).
 
-A background watcher keeps an eye on the tmux server and closes any tmux pane with nothing running in it (an empty shell or a dead pane) after 5 minutes untouched. Set `close_empty_minutes` under `[health]` in `pantheon.toml`; 0 turns it off.
+`bin/schedule` starts a session at a set time, or at `--at reset` (just after the next 5-hour reset; `--at weekly-reset` for the weekly one). With `--session NAME --prompt "..."` it types a prompt into an existing session instead, waiting until that session is idle at an empty prompt.
+
+`bin/browser start` runs a headless Chrome, Edge or Firefox on its own profile with a debugging port on 127.0.0.1, so agents on the SSH side can drive a signed-in browser without touching your everyday one. See `docs/browser-lane.md`.
+
+A background watcher keeps an eye on the tmux server and closes any tmux pane with nothing running in it (an empty shell or a dead pane) after 5 minutes untouched. Set `close_empty_minutes` under `[health]` in `pantheon.toml`; 0 turns it off. When the tmux server ends, the watcher saves what it left behind (its exit code, Windows' exit and error events, the last tmux commands and agent events) under `state/health/exit-<time>/` and alerts you.
 
 Tests: `.venv/bin/python -m pytest -q`
 

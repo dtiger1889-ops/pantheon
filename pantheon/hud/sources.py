@@ -575,10 +575,13 @@ def read_hud(cfg) -> dict:
         return {}
 
 
-def _append_sample(samples: list, stamp: Optional[str], pct: Optional[float]) -> list:
+def _append_sample(samples: list, stamp: Optional[str], pct: Optional[float],
+                   resets_at: Optional[str] = None) -> list:
     """Add one reading unless it is missing or not newer than the last one kept. The stamp is
     when the SOURCE reported the number, not when the collector looked: an idle session's
-    capture read again every minute is one reading, not a flat line that fakes `burn 0%/h`."""
+    capture read again every minute is one reading, not a flat line that fakes `burn 0%/h`.
+    The window's reset time rides along as a third item when known, so the burn walk sees a
+    reset the percent alone cannot (`calc.rising_tail`)."""
     if pct is None or not stamp:
         return samples
     if samples:
@@ -586,11 +589,13 @@ def _append_sample(samples: list, stamp: Optional[str], pct: Optional[float]) ->
         this = calc._as_epoch(stamp)
         if last is not None and this is not None and this <= last:
             return samples
-    return samples + [[stamp, pct]]
+    return samples + [[stamp, pct, resets_at] if resets_at else [stamp, pct]]
 
 
 def _history(previous: dict, claude_pct: Optional[float], stamp: str,
-             codex_pct: Optional[float] = None, codex_stamp: Optional[str] = None) -> dict:
+             codex_pct: Optional[float] = None, codex_stamp: Optional[str] = None,
+             claude_resets_at: Optional[str] = None,
+             codex_resets_at: Optional[str] = None) -> dict:
     """Keep the last HISTORY_SAMPLES readings per provider: bare percentages for the sparkline,
     and the same readings with their timestamps so the burn rate can be measured over real
     elapsed time. Codex's series (`codex_pct`/`codex_samples`) is stamped with its log line's
@@ -598,9 +603,11 @@ def _history(previous: dict, claude_pct: Optional[float], stamp: str,
     rate or a trend."""
     old = previous.get("history") or {}
     out: dict = {}
-    for key, pct, when in (("claude", claude_pct, stamp), ("codex", codex_pct, codex_stamp)):
-        samples = [s for s in (old.get(f"{key}_samples") or []) if isinstance(s, list) and len(s) == 2]
-        samples = _append_sample(samples, when, pct)[-HISTORY_SAMPLES:]
+    for key, pct, when, reset in (("claude", claude_pct, stamp, claude_resets_at),
+                                  ("codex", codex_pct, codex_stamp, codex_resets_at)):
+        samples = [s for s in (old.get(f"{key}_samples") or [])
+                   if isinstance(s, list) and len(s) in (2, 3)]
+        samples = _append_sample(samples, when, pct, reset)[-HISTORY_SAMPLES:]
         out[f"{key}_pct"] = [s[1] for s in samples]
         out[f"{key}_samples"] = samples
     return out
@@ -675,6 +682,7 @@ def collect(cfg, write: bool = True, slow: bool = True, poll_account: bool = Fal
     history = _history(
         previous, claude.five_hour_pct, getattr(claude, "five_hour_as_of", None) or stamp,
         codex.five_hour_pct, codex.five_hour_as_of,
+        claude_resets_at=claude.five_hour_resets_at, codex_resets_at=codex.five_hour_resets_at,
     )
     now = _now_epoch()
     claude.burn_pct_per_hour = calc.burn_pct_per_hour(

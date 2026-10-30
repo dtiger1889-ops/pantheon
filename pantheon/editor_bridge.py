@@ -53,7 +53,7 @@ def find_code_cli(editor_cfg: dict, env: Optional[dict] = None,
                   exists: Callable[[str], bool] = os.path.exists) -> Optional[str]:
     """Where VS Code's `code.cmd` is, in Windows form, or None. `[editor] vscode_cli` wins; then
     the PATH; then the per-user install folder (the session's PATH under MSYS2 is stripped, so
-    the PATH alone is not enough -- `computer_diagnosis/reference/CLI_TOOLS_PATH_INDEX.md`)."""
+    the PATH alone is not enough)."""
     env = os.environ if env is None else env
     candidates = []
     if editor_cfg.get("vscode_cli"):

@@ -3,6 +3,10 @@ exits; the waiting is Windows Task Scheduler's.
 
     bin/schedule <project> --at 06:00 [--who claude|codex-pc|codex-headless]
                  [--model M] [--effort E] [--mode MODE] [--message TEXT] [--preset NAME] [--force]
+    bin/schedule --at reset ...      the next five-hour reset (+2 min) from state/hud.json;
+                                     `--at weekly-reset` the weekly one
+    bin/schedule --session NAME --at reset (--prompt TEXT | --prompt-file PATH) [--or-new <project>]
+                                     type a prompt into the EXISTING session whose window is NAME
     bin/schedule --list              what is waiting, and how the ones that ran went
     bin/schedule --cancel <id>       take one off (the id is in --list)
     bin/schedule --fire <id>         what the Task Scheduler entry runs; not for typing by hand
@@ -20,6 +24,7 @@ from typing import Optional
 
 from ..dispatch import presets as presets_mod
 from ..dispatch import projects as projects_mod
+from . import deliver as deliver_mod
 from . import plan
 from . import schedule as schedule_mod
 
@@ -33,7 +38,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("project", nargs="?", default=None,
                         help="a folder name under projects_root, or a path (may be left out when --preset names one)")
-    parser.add_argument("--at", help="the time to start, HH:MM, 24-hour, local; tomorrow if already past today")
+    parser.add_argument("--at", help="the time to start: HH:MM (24-hour, local; tomorrow if already past today), "
+                                     "or `reset` (next five-hour reset + 2 min) or `weekly-reset`, read from state/hud.json")
+    parser.add_argument("--session", metavar="NAME", default=None,
+                        help="type a prompt into the existing session whose window is named NAME (as the deck shows it) "
+                             "instead of starting a new one; needs --prompt or --prompt-file")
+    parser.add_argument("--prompt", default=None, help="the text to type into --session at the chosen time")
+    parser.add_argument("--prompt-file", metavar="PATH", default=None, help="read the --session prompt from a file now")
+    parser.add_argument("--or-new", action="store_true",
+                        help="if --session is gone when the time comes, start a NEW session in <project> with the prompt "
+                             "as its first message (otherwise the prompt is dropped and you are told)")
     parser.add_argument("--who", choices=sorted(_PROVIDER_FOR_WHO), default=None,
                         help="who works it (default: the preset's, else claude)")
     parser.add_argument("--model", default=None)
@@ -63,7 +77,12 @@ def _show_list(cfg) -> int:
         return 0
     for m in items:
         choices = "/".join(v for v in (m.get("options") or {}).values() if v)
-        line = f"{_when(m.get('at'))}  {m.get('project')}  {m.get('who')}"
+        if m.get("kind") == "prompt":
+            line = f"{_when(m.get('at'))}  prompt -> {m.get('target')}"
+            line += "  (or new)" if m.get("or_new") else ""
+            choices = ""
+        else:
+            line = f"{_when(m.get('at'))}  {m.get('project')}  {m.get('who')}"
         if choices:
             line += f" {choices}"
         line += f"  {m.get('status')}  {m.get('id')}"
@@ -73,9 +92,76 @@ def _show_list(cfg) -> int:
     return 0
 
 
+def _resolve_at(text: str, cfg, provider: str):
+    """`--at` -> a start time: `reset` / `weekly-reset` come from state/hud.json, anything else is HH:MM."""
+    if plan.is_reset_word(text):
+        return plan.resolve_reset(text, cfg, provider=provider)
+    return plan.parse_at(text)
+
+
+def _create_prompt(cfg, args, chosen) -> int:
+    """`--session NAME`: type a prompt into an existing session at the chosen time."""
+    if bool(args.prompt) == bool(args.prompt_file):
+        print("give the text to type with exactly one of --prompt TEXT or --prompt-file PATH")
+        return 2
+    prompt = args.prompt or ""
+    if args.prompt_file:
+        try:
+            prompt = Path(args.prompt_file).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"could not read the prompt file {args.prompt_file}: {exc}; nothing was scheduled")
+            return 2
+    if not prompt.strip():
+        print("the prompt is empty; nothing was scheduled")
+        return 2
+    who = chosen.get("who") or "claude"
+    if who not in _PROVIDER_FOR_WHO:
+        print(f"'{who}' is not someone this deck can start; pick one of: {', '.join(sorted(_PROVIDER_FOR_WHO))}")
+        return 2
+    project_dir = None
+    if args.or_new:
+        if not chosen.get("project"):
+            print("--or-new needs the project to start the new session in; name a folder")
+            return 2
+        project_dir = projects_mod._resolve_project(cfg, chosen["project"])
+        if not Path(project_dir).is_dir():
+            print(f"that folder is not there: {project_dir}")
+            return 2
+        if who == "codex-pc":
+            print("--or-new starts a Claude session or a headless Codex job; codex-pc cannot take a prompt this way")
+            return 2
+    try:
+        at = _resolve_at(args.at, cfg, _PROVIDER_FOR_WHO[who])
+    except ValueError as exc:
+        print(exc)
+        return 2
+    problems = [p for p in (deliver_mod.check_name_now(cfg, args.session),
+                            plan.warn_for(at, cfg, provider=_PROVIDER_FOR_WHO[who])) if p]
+    if problems:
+        print(" ".join(problems))
+        if not args.force:
+            print("Nothing was scheduled. Add --force to schedule it anyway.")
+            return 1
+    options = {k: chosen.get(k) for k in ("model", "effort", "mode") if chosen.get(k)}
+    result = schedule_mod.create_prompt(cfg, args.session, prompt, at, project_dir=project_dir, who=who,
+                                        options=options, or_new=args.or_new, warning=" ".join(problems) or None,
+                                        pane_id=deliver_mod.pane_now(cfg, args.session))
+    if not result.ok:
+        print(result.message)
+        return 1
+    print(f"scheduled: {result.message}")
+    print(f"  runs: {result.manifest.get('command')}")
+    print(f"  take it off with: bin/schedule --cancel {result.id}")
+    return 0
+
+
 def _create(cfg, args) -> int:
     if not args.at:
-        print("when? add --at HH:MM, e.g. --at 06:00")
+        print("when? add --at HH:MM, e.g. --at 06:00, or --at reset for the next usage reset")
+        return 2
+    if args.session is None and (args.prompt or args.prompt_file or args.or_new):
+        print("--prompt, --prompt-file and --or-new go with --session NAME (the existing session to type into); "
+              "to give a NEW session its first words use --message")
         return 2
     chosen = {"project": args.project, "who": args.who, "model": args.model,
               "effort": args.effort, "mode": args.mode, "message": args.message}
@@ -85,6 +171,8 @@ def _create(cfg, args) -> int:
         except presets_mod.PresetError as exc:
             print(exc)
             return 2
+    if args.session is not None:
+        return _create_prompt(cfg, args, chosen)
     if not chosen.get("project"):
         print("which project? name a folder, or use a preset that names one")
         return 2
@@ -101,7 +189,7 @@ def _create(cfg, args) -> int:
         print("a headless Codex job needs a first message to work on; add --message")
         return 2
     try:
-        at = plan.parse_at(args.at)
+        at = _resolve_at(args.at, cfg, _PROVIDER_FOR_WHO[who])
     except ValueError as exc:
         print(exc)
         return 2

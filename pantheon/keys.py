@@ -55,7 +55,10 @@ deck (tmux window 0) - THE PIT: who is running, and what they need
          goes back to the editor that is already open instead of opening another
     V    open the highlighted session's folder in VS Code on the desk (from
          the task list: that row's note). Needs a one-time setup first:
-         (see the editor setup note); the bottom line says if it is missing
+         docs/editor-bridge-setup.md; the bottom line says if it is missing.
+         With [editor] vscode_bridge = true, E / e ask: Edit here, or VS Code
+    U    the usage-planning page in its own window: lay queue rows out and see what
+         they would cost of the 5-hour and weekly limits (q closes it)
     A    the Assistant beside the list (same as clicking its line)
     L    reconnect the Assistant's phone link when its line says
          `phone link off` (types /remote-control into it, only when it
@@ -100,8 +103,12 @@ deck (tmux window 0) - THE PIT: who is running, and what they need
     l    open a Codex job's log
     Enter  show every action for this row
     r    refresh the list right now
-    where column: pantheon:3 = window 3 of this tmux; main:0 = another tmux;
-    desktop = not in any tmux (Claude Desktop or a plain terminal); headless = a Codex job
+    f    desk width: swap the two-line rows for the old column table, and back
+    each row: the session's title, then one word - working, blocked (asks
+    permission), waiting (asks you something), done (finished, not looked at
+    yet; it reads idle once you jump to it) - then who, project, age, doing
+    where (table and detail box): pantheon:3 = window 3 of this tmux; main:0 = another
+    tmux; desktop = not in any tmux (Claude Desktop or a plain terminal); headless = a Codex job
     every key above is also a button under the selected row"""
 
 

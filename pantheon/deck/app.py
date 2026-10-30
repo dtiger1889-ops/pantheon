@@ -49,6 +49,7 @@ from .. import restart as restart_mod
 from .. import fullrestart as fullrestart_mod
 from ..health import status as health_status_mod
 from ..widgets.footer import PhoneFooter, fit_footer, make_footer
+from ..widgets.tips import TipBar, compute_tips
 from .. import keys as keys_mod
 from .. import theme as theme_mod
 from ..hud.strip import HudStrip
@@ -60,6 +61,7 @@ from ..pit import tmux_pit
 from .. import stage as stage_mod
 from .. import editor as editor_mod
 from .. import editor_bridge as editor_bridge_mod
+from ..planning import window as planning_window_mod
 from .. import tmuxctl
 from .. import tmuxfeed
 from ..dispatch import projects as projects_mod
@@ -104,6 +106,10 @@ EDIT_PROMPT_TITLE = "edit which file?"
 EDIT_PROMPT_PLACEHOLDER = "in {folder}\ntype a file name there, or a whole path"
 EDIT_PROMPT_HINT = "Enter opens it beside the list · Esc cancels"
 EDIT_NOTHING = "no file named; nothing opened"
+# With `[editor] vscode_bridge = true` the editor action asks which editor.
+EDIT_WHERE_TITLE = "edit where?"
+EDIT_HERE = PickOption("1", "here", "Edit here", "a text editor beside the list")
+EDIT_VSCODE = PickOption("2", "vscode", "Open in VS Code", "on the desk")
 
 
 def _sent_channel_text(record: dict) -> str:
@@ -163,6 +169,8 @@ def _pct_segment(name: str, pct: Optional[float], dim: str) -> Text:
 RESTART_RESULT_POLL_S = 3.0
 # How often the deck makes sure its tmux feed helper is running (pantheon/tmuxfeed.py).
 FEED_CHECK_S = 30.0
+# How often the tip line above the key strip turns to its next tip (widgets/tips.py).
+TIP_ROTATE_S = 11.0
 
 
 class DeckApp(KeepAlive, App):
@@ -243,6 +251,10 @@ class DeckApp(KeepAlive, App):
         # in VS Code on the desk, through the Scheduled Task the user registers once
         # (one-time setup). Lower-case `v` is the table's view-request key.
         Binding("V", "open_in_vscode", "open in VS Code", show=False),
+        # capital `U` opens the usage-planning page in its own PLAN window (`P` is the pit;
+        # lower-case `u` is unused but a capital matches the other deck-wide keys). No priority:
+        # a type-to-agent box must still take a capital U as a letter.
+        Binding("U", "open_planning", "usage plan", show=False),
         # capital `A` puts the pinned Assistant on screen (starting it first when it is not
         # running). No priority, same as `R`: a type-to-agent box must still take a capital A.
         Binding("A", "assistant", "assistant", show=False),
@@ -313,6 +325,10 @@ class DeckApp(KeepAlive, App):
         self._message = ""
         self._keys_page = 0   # `?` overlay: 0 = the key list, 1 = the connector gap list, 2 = the tool inventory (skills/hooks/guards sync report)
         self._sent_seen_size = 0   # how much of state/notify/sent.jsonl we have read
+        # The rotating tip line (widgets/tips.py): desk width only, `[deck] tips = false` = off.
+        self._tips_on = self.cfg.deck_settings().tips
+        self.tip_bar = TipBar()
+        self._deck_screen = None   # the screen whose bindings the tips read (not a modal's)
 
     # ------------------------------------------------------------------ layout
 
@@ -333,6 +349,7 @@ class DeckApp(KeepAlive, App):
         with Horizontal(id="deck-status-row"):
             yield Static("", id="deck-status", markup=False)
             yield Static("", id="deck-status-right", markup=False)
+        yield self.tip_bar
         yield PhoneFooter("deck")
         yield make_footer()
 
@@ -364,6 +381,13 @@ class DeckApp(KeepAlive, App):
         # every session that did not come back.
         self._restart_result_since = self._restart_result_mtime() or 0.0
         self.set_interval(RESTART_RESULT_POLL_S, self._check_restart_result)
+        self._deck_screen = self.screen
+        if self._tips_on:
+            self.set_interval(TIP_ROTATE_S, self._rotate_tip)
+            # Focus moving between panels changes which keys are live: re-read the tips then too,
+            # so the one on screen is never a key that just stopped working.
+            self.screen.bindings_updated_signal.subscribe(self, lambda _screen: self._refresh_tips())
+            self.call_after_refresh(self._refresh_tips)
         self._focus_default()
         # the pinned Assistant comes back whenever the deck starts -- after `R`, after
         # `pantheon --restart --all`, after a tmux server death -- resuming the same conversation.
@@ -375,6 +399,23 @@ class DeckApp(KeepAlive, App):
 
     def on_resize(self, event: tevents.Resize) -> None:
         self._apply_width(event.size.width)
+        self._refresh_tips()   # a wider footer shows more keys, so fewer of them are tips
+
+    # ------------------------------------------------------------------ the tip line
+
+    def _refresh_tips(self) -> None:
+        """Recompute the tips from the deck screen's live bindings and the footer at this width.
+        Nothing to do while the line is hidden (phone tier, staged, or `[deck] tips = false`)."""
+        if not self.tip_bar.display or self._deck_screen is None:
+            return
+        self.tip_bar.show_tips(compute_tips(self._deck_screen.active_bindings.values(),
+                                            self.get_key_display, self.size.width))
+
+    def _rotate_tip(self) -> None:
+        if not self.tip_bar.display:
+            return
+        self._refresh_tips()
+        self.tip_bar.advance()
 
     # ------------------------------------------------------------------ presence + the sent line
     #
@@ -450,6 +491,11 @@ class DeckApp(KeepAlive, App):
         self.queue.display = mode == DESK and self._queue_open
         self.strip.display = mode == DESK
         self.stage_usage.display = mode == STAGED
+        # The tip line is desk only: under 120 columns it takes no row at all, so the phone tier
+        # draws exactly what it drew before; staged has no key strip for it to complement.
+        self.tip_bar.display = mode == DESK and self._tips_on
+        if self.tip_bar.display:
+            self.call_after_refresh(self._refresh_tips)
         if mode == STAGED:
             # "the usage and the sidebar, nothing else": no key footer either -- every line in
             # the sidebar is its own control.
@@ -1068,6 +1114,21 @@ class DeckApp(KeepAlive, App):
         target = target or self._edit_folder()
         self.run_worker(lambda: self._vscode_worker(target), thread=True)
 
+    def action_open_planning(self) -> None:
+        """`U`: the usage-planning page in its own `PLAN` window. Runs in a thread: tmux
+        subprocess calls."""
+        self._say("opening the planning page...")
+        self.run_worker(self._planning_worker, thread=True)
+
+    def _planning_worker(self) -> None:
+        try:
+            result = planning_window_mod.open_window(self.cfg, tmux=self.cfg.tools.tmux)
+        except Exception:
+            log.exception("opening the planning page failed")
+            result = {"ok": False, "message": f"could not open the planning page; details are in {self.cfg.log_file}"}
+        self.call_from_thread(self._say, result.get("message", ""),
+                              None if result.get("ok") else "warning")
+
     def _vscode_worker(self, target: str) -> None:
         try:
             result = editor_bridge_mod.request_open(self.cfg.editor, self.cfg.state_dir, target)
@@ -1092,6 +1153,20 @@ class DeckApp(KeepAlive, App):
             # Already open (beside the list, or parked in its own window): focus it or bring it
             # back -- never a second editor.
             return self._run_edit("", "")
+        if editor_mod.vscode_bridge_enabled(self.cfg) and self._mode != PHONE:
+            # Desk only: the VS Code bridge is hidden at phone width, which keeps the one editor.
+            target = known_file or folder
+
+            def chosen(choice: Optional[str]) -> None:
+                if choice == "vscode":
+                    self.run_worker(lambda: self._vscode_worker(target), thread=True)
+                elif choice == "here":
+                    self._edit_here(folder, known_file)
+
+            return self.push_screen(Pick(EDIT_WHERE_TITLE, [EDIT_HERE, EDIT_VSCODE]), chosen)
+        self._edit_here(folder, known_file)
+
+    def _edit_here(self, folder: str, known_file: str = "") -> None:
         if known_file:
             return self._run_edit(known_file, str(Path(known_file).parent))
 

@@ -147,27 +147,62 @@ def create(cfg, project_dir: str, at: datetime, who: str = "claude", options: Op
     stamp = int(now if now is not None else time.time())
     task_id = task_name or f"{TASK_PREFIX}{briefing_mod.slug(Path(str(project_dir)).name, 30)}-{stamp}"
     args = open_args(project_dir, who, options, message)
-    task_run = fire_command(task_id)
-    proc = run(schtasks_create_argv(task_id, at, task_run))
-    if proc.returncode != 0:
-        return ScheduleResult(False, f"Task Scheduler would not take it: {_said(proc)}", task_id)
-    manifest = {
-        "id": task_id,
+    fields = {
         "project": Path(str(project_dir)).name,
         "project_dir": str(project_dir).replace("\\", "/"),
-        "at": at.isoformat(timespec="minutes"),
         "who": who or "claude",
         "options": {k: v for k, v in (options or {}).items() if v},
         "message": (message or "").strip(),
         "open_args": args,
         "command": command_line(args),
-        "task_run": task_run,
         "warning": warning or "",
-        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "status": "waiting",
     }
+    return _register(cfg, task_id, at, fields, run, f"{fields['project']} starts")
+
+
+def _register(cfg, task_id: str, at: datetime, fields: dict, run: Runner, verb: str) -> ScheduleResult:
+    """The one Task Scheduler entry + the note beside it, for every kind of timed job."""
+    task_run = fire_command(task_id)
+    proc = run(schtasks_create_argv(task_id, at, task_run))
+    if proc.returncode != 0:
+        return ScheduleResult(False, f"Task Scheduler would not take it: {_said(proc)}", task_id)
+    manifest = {"id": task_id, "at": at.isoformat(timespec="minutes"), **fields, "task_run": task_run,
+                "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "status": "waiting"}
     _write(cfg, manifest)
-    return ScheduleResult(True, f"{manifest['project']} starts {at.strftime('%a %d %b %H:%M')}", task_id, manifest)
+    return ScheduleResult(True, f"{verb} {at.strftime('%a %d %b %H:%M')}", task_id, manifest)
+
+
+def create_prompt(cfg, target: str, prompt: str, at: datetime, project_dir: Optional[str] = None,
+                  who: str = "claude", options: Optional[dict] = None, or_new: bool = False,
+                  warning: Optional[str] = None, run: Optional[Runner] = None,
+                  now: Optional[float] = None, pane_id: Optional[str] = None) -> ScheduleResult:
+    """Register a prompt to be typed into the EXISTING session whose window is named `target`
+    at `at`. With `or_new` (and a `project_dir`) a gone session is replaced by a new one that
+    gets the same text as its first message. The note holds the prompt itself. `pane_id`, when
+    tmux answered at scheduling time, pins the prompt to that pane: a different session that
+    later takes the name counts as the old one being gone."""
+    run = run or run_schtasks
+    stamp = int(now if now is not None else time.time())
+    task_id = f"{TASK_PREFIX}prompt-{briefing_mod.slug(target, 30)}-{stamp}"
+    fields = {
+        "kind": "prompt",
+        "project": target,
+        "target": target,
+        "prompt": (prompt or "").strip(),
+        "or_new": bool(or_new),
+        "who": who or "claude",
+        "options": {k: v for k, v in (options or {}).items() if v},
+        "warning": warning or "",
+    }
+    if pane_id:
+        fields["pane_id"] = pane_id
+    if or_new and project_dir:
+        args = open_args(project_dir, who, options, prompt)
+        fields.update(project_dir=str(project_dir).replace("\\", "/"), open_args=args)
+    shown = fields["prompt"].replace("\n", " ")
+    fields["command"] = f"type into '{target}': {shown[:60]}{'...' if len(shown) > 60 else ''}"
+    return _register(cfg, task_id, at, fields, run, f"prompt for '{target}' is typed in")
 
 
 def list_staged(cfg) -> list[dict]:
@@ -210,9 +245,11 @@ def _default_opener(args: list[str]) -> tuple[int, str]:
 
 
 def fire(cfg, task_id: str, run: Optional[Runner] = None,
-         opener: Optional[Callable[[list[str]], tuple[int, str]]] = None) -> ScheduleResult:
-    """What the Task Scheduler entry runs: start the session its note describes, write down how
-    it went, and remove the one-shot entry so Task Scheduler does not fill up with spent ones."""
+         opener: Optional[Callable[[list[str]], tuple[int, str]]] = None,
+         deliverer: Optional[Callable[..., tuple[int, str]]] = None) -> ScheduleResult:
+    """What the Task Scheduler entry runs: start the session its note describes (or, for a prompt
+    note, type the prompt into the existing session), write down how it went, and remove the
+    one-shot entry so Task Scheduler does not fill up with spent ones."""
     run = run or run_schtasks
     opener = opener or _default_opener
     manifest = read(cfg, task_id)
@@ -221,11 +258,49 @@ def fire(cfg, task_id: str, run: Optional[Runner] = None,
     if manifest.get("status") != "waiting":
         return ScheduleResult(False, f"{task_id} already ran ({manifest.get('status')}); nothing started",
                               task_id, manifest)
+    # Claim the fire atomically: two `--fire` runs that both read "waiting" cannot both go on
+    # The loser re-reads the note the winner writes.
+    claim = _manifest_path(cfg, task_id).with_suffix(".firing")
     try:
-        code, said = opener(list(manifest.get("open_args") or []))
+        os.close(os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return ScheduleResult(False, f"{task_id} is already being fired; nothing started", task_id, manifest)
+    try:
+        manifest = read(cfg, task_id)      # read again under the claim: an earlier fire may have finished
+        if manifest is None or manifest.get("status") != "waiting":
+            return ScheduleResult(False, f"{task_id} already ran; nothing started", task_id, manifest or {})
+        return _fire_claimed(cfg, task_id, manifest, run, opener, deliverer)
+    finally:
+        with contextlib.suppress(OSError):
+            claim.unlink()
+
+
+def _fire_claimed(cfg, task_id: str, manifest: dict, run: Runner, opener, deliverer) -> ScheduleResult:
+    prompt_job = manifest.get("kind") == "prompt"
+    try:
+        if prompt_job:
+            from . import deliver as deliver_mod
+
+            manifest["status"] = "trying"       # --list shows a prompt that is waiting for an idle prompt
+            _write(cfg, manifest)
+            if deliverer is None:
+                # `cancel` deletes the note; the retry loop stops at its next look once it is gone.
+                code, said = deliver_mod.run(cfg, manifest, opener=opener,
+                                             cancelled=lambda: not _manifest_path(cfg, task_id).exists())
+            else:
+                code, said = deliverer(cfg, manifest, opener=opener)
+        else:
+            code, said = opener(list(manifest.get("open_args") or []))
     except Exception as exc:   # the note must say what happened, whatever happened
         code, said = 1, f"{type(exc).__name__}: {exc}"
-    manifest["status"] = "started" if code == 0 else "did not start"
+    if prompt_job and not _manifest_path(cfg, task_id).exists():
+        # Cancelled while it waited for an idle prompt: writing the note back would undo the cancel.
+        run(schtasks_delete_argv(task_id))
+        return ScheduleResult(False, said or "cancelled", task_id, manifest)
+    if prompt_job:
+        manifest["status"] = "sent" if code == 0 else "did not send"
+    else:
+        manifest["status"] = "started" if code == 0 else "did not start"
     manifest["result"] = said
     manifest["fired_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     _write(cfg, manifest)

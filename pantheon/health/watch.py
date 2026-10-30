@@ -18,8 +18,12 @@ Every `probe_seconds` it asks tmux `list-sessions`:
     freeze: storm guard, alert, end the server (`taskkill //F //T`), restart and resume
     (`fullrestart.run_after_freeze`), alert the result.
   - could not start the process (fork failed): a low-memory signal, not a miss.
-  - no server running: one log line, then the watcher leaves. Server deaths are out of scope; the
-    next `bin/pantheon` that starts a server starts a new watcher.
+  - no server running: if this watcher had seen the server answer, it saves the exit capture
+    (`capture.capture_exit`, `state/health/exit-<UTC>/`) and alerts, unless a full restart was
+    under way or the deck is a throwaway one; then it leaves. The next `bin/pantheon` that starts
+    a server starts a new watcher. Only with `[health] server_log = true` (off by default:
+    it lagged every window) is tmux's own log kept on and capped while the server
+    answers (`server_log.py`), so the capture has the server's last lines.
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ from .. import tmuxctl
 from ..notify import channels
 from . import capture as capture_mod
 from . import sample as sample_mod
+from . import server_log as server_log_mod
 from . import status as status_mod
 
 log = logging.getLogger("pantheon.health.watch")
@@ -63,11 +68,12 @@ PLANNED_EVERY_SECONDS = 6 * 3600
 PLANNED_BACKOFF_WINDOW_SECONDS = 3600
 RESULT_WAIT_SECONDS = 900
 RESULT_POLL_SECONDS = 2.0
+RESTART_SNAPSHOT_FRESH_SECONDS = 900
 
 # Empty panes. Empty = a dead pane, or a shell with no process under it; the
 # deck's own windows run their python under a bash too, so the command name alone is not enough.
 # Only MSYS2 shells: a program started from a native shell (pwsh, cmd) never appears in MSYS2's
-# /proc as its child, so an idle-looking pwsh may be running Claude (Sol audit 2026-10-15).
+# /proc as its child, so an idle-looking pwsh may be running Claude.
 EMPTY_CHECK_SECONDS = 60
 EMPTY_SHELLS = frozenset({"bash", "-bash", "sh", "dash", "zsh", "fish"})
 KEPT_WINDOWS = frozenset({"DECK", "QUEUE", "BUDGET", "ASSISTANT"})
@@ -257,6 +263,8 @@ class Watcher:
         self.root = Path(root or config_mod.PROJECT_ROOT)
 
         self.misses = 0
+        self.server_seen_pid = None   # the server this watcher last saw answer, and since when
+        self.server_seen_since: Optional[float] = None
         self.first_miss_at = 0.0      # when the current run of misses began (for a stall's length)
         self.left_frozen = False      # the storm guard left a frozen server for the user
         self.leaving = False
@@ -269,6 +277,7 @@ class Watcher:
         self.hourly_hour: Optional[str] = None   # UTC hour of the last hourly line; None = not read yet
         self.events_offset: Optional[int] = None
         self.next_empty_check = 0.0
+        self.last_answered: Optional[float] = None   # set once this watcher has seen the server
         self.state =_read_json(health_dir(cfg) / STATE_FILE)
 
     # ------------------------------------------------------------------ small helpers
@@ -338,12 +347,14 @@ class Watcher:
                 log.info("tmux answers again")
             self.misses = 0
             self.left_frozen = False
+            self.freeze_log(False)
             self.healthy()
         elif outcome == TIMEOUT:
             if self.left_frozen:
                 return outcome
             if not self.misses:
                 self.first_miss_at = self.clock()
+                self.freeze_log(True)
             self.misses += 1
             log.warning("tmux did not answer (%d of %d)", self.misses, self.h.freeze_after_misses)
             if self.misses >= self.h.freeze_after_misses:
@@ -354,14 +365,74 @@ class Watcher:
             self.check_memory(spawn_failed=True)
         elif outcome == NO_SERVER:
             log.info("no tmux server running; the watcher leaves")
+            if self.last_answered is not None:
+                self.on_server_gone()
             self.leaving = True
         return outcome
+
+    def freeze_log(self, on: bool) -> None:
+        """tmux's own log while the server is not answering (`server_log.freeze_toggle`); left
+        alone when `server_log = true` keeps it on all the time, since a toggle would turn it off."""
+        if self.h.server_log or not (self.h.freeze_log or self.state.get("freeze_log_pid")):
+            return
+        if not on and not self.state.get("freeze_log_pid"):
+            return
+        did = server_log_mod.freeze_toggle(self.state, sample_mod.read_server(self.cfg).get("msys_pid"),
+                                           on, kill=self.kill, proc_root=self.proc_root)
+        if did:
+            log.info("tmux log while not answering: %s (%s)", did, self.state.get("freeze_log"))
+        self.save_state()
+
+    def restart_under_way(self) -> bool:
+        """A full restart (`pantheon --restart --all`) writes its snapshot just before it ends
+        the server; a fresh one means this exit was asked for."""
+        try:
+            written = fullrestart.snapshot_path(self.cfg).stat().st_mtime
+        except OSError:
+            return False
+        age = self.clock() - written
+        # Only a snapshot written while THIS server was up: the restart that started it wrote one
+        # before it, and a crash of the new server minutes later is not planned.
+        if self.server_seen_since is not None and written < self.server_seen_since:
+            return False
+        return 0 <= age < RESTART_SNAPSHOT_FRESH_SECONDS
+
+    def on_server_gone(self) -> None:
+        """The server this watcher saw answer is gone: save what it left behind, then tell the user
+        why it may have ended."""
+        planned = self.restart_under_way()
+        folder, manifest = capture_mod.capture_exit(
+            self.cfg, self.h, sample_mod.read_server(self.cfg), self.spawn, self.clock,
+            self.last_answered, server_log=self.state.get("server_log") or self.state.get("freeze_log"),
+            planned=planned)
+        log.warning("tmux server gone (last answer %s, planned=%s); capture %s, skipped %s",
+                    _iso(self.last_answered), planned, folder, manifest.get("skipped"))
+        if planned or self.cfg.tmux_session != sample_mod.DEFAULT_SESSION:
+            return
+        last = datetime.fromtimestamp(self.last_answered).strftime("%H:%M")
+        self.alert("Pantheon's tmux server ended",
+                   f"It last answered at {last}. A report of what was happening then was saved.")
 
     # ------------------------------------------------------------------ while healthy
 
     def healthy(self) -> None:
         now = self.clock()
+        self.last_answered = now
         server = sample_mod.refresh_server(self.cfg, run=self.run, proc_root=self.proc_root)
+        if self.server_seen_since is None or server.get("msys_pid") != self.server_seen_pid:
+            self.server_seen_pid, self.server_seen_since = server.get("msys_pid"), now
+        if self.h.server_log:
+            known = self.state.get("server_log")
+            did = server_log_mod.keep(self.state, server.get("msys_pid"), self.h.server_log_mb,
+                                      kill=self.kill, sleep=self.sleep, proc_root=self.proc_root)
+            if did:
+                log.info("tmux server log %s: %s", did, self.state.get("server_log"))
+            if did or self.state.get("server_log") != known:
+                self.save_state()
+        elif self.state.pop("server_log", None) is not None:
+            # Logging off: a path left by an earlier watcher belongs to an older server, and the
+            # exit capture must not present its tail as this one's.
+            self.save_state()
         self.record_pane_exits()
         if now >= self.next_snapshot:
             self.next_snapshot = now + self.h.snapshot_seconds
@@ -758,8 +829,11 @@ class Watcher:
         server = sample_mod.read_server(self.cfg)
         # 1. capture
         try:
-            folder, manifest = capture_mod.capture(self.cfg, self.h, server, self.spawn,
-                                                   self.sampler, self.clock)
+            folder, manifest = capture_mod.capture(
+                self.cfg, self.h, server, self.spawn, self.sampler, self.clock,
+                server_log=self.state.get("freeze_log") or self.state.get("server_log"))
+            if self.state.get("freeze_log"):
+                self.state["freeze_log_kept"] = True   # its tail is in the capture; keep the file
         except Exception as exc:              # capture is best effort; the restart is not
             log.exception("the freeze capture failed")
             folder, manifest = None, {"error": str(exc), "taken": [], "skipped": []}
@@ -776,9 +850,20 @@ class Watcher:
         # four running background agents with it. A server that answers now stalled; it did not
         # freeze: keep the details (as stall-*, so the done bar's freeze-* count stays true),
         # say so, and end nothing.
-        if self.probe() == ANSWERED:
+        final = self.probe()
+        if final == ANSWERED:
             self.on_stall(folder, now)
             return
+        if final == NO_SERVER and self.last_answered is not None:
+            # It died during the capture: save its exit evidence (exit record, Windows exit events,
+            # crash dump) before the restart starts a new server.
+            try:
+                exit_folder, _ = capture_mod.capture_exit(
+                    self.cfg, self.h, server, self.spawn, self.clock, self.last_answered,
+                    server_log=self.state.get("server_log") or self.state.get("freeze_log"))
+                log.warning("tmux server ended during the freeze capture; exit capture %s", exit_folder)
+            except Exception:
+                log.exception("the exit capture after the freeze failed")
         self.state["last_freeze"] = now
         if not self.h.auto_restart:
             # The spec's freeze actions assume auto_restart; off = capture and alert only.
@@ -827,6 +912,7 @@ class Watcher:
         self.alert("Pantheon stalled",
                    f"Pantheon stopped answering for about {max(seconds, 1)} seconds at {self.hhmm()} "
                    f"and came back by itself. Nothing was restarted; details saved.")
+        self.freeze_log(False)
         self.healthy()
 
     def end_server(self, server: dict) -> None:

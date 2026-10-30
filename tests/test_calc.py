@@ -36,6 +36,34 @@ def test_burn_rate_starts_over_after_a_window_reset():
     assert burn is not None and abs(burn - 12.0) < 0.01
 
 
+def test_a_one_point_dip_is_noise_not_a_window_reset():
+    # A real series: 46, 48, 47 climbing, minutes apart.
+    burn = calc.burn_pct_per_hour(_samples([(20, 45.0), (10, 46.0), (5, 48.0), (0, 47.0)]))
+    assert burn is not None and abs(burn - 6.0) < 0.01
+
+
+def test_a_flat_wobble_reads_zero_not_unknown():
+    # 46, 45, 46, 45 ends a point below its start: no burn, but not a blank card either.
+    burn = calc.burn_pct_per_hour(_samples([(6, 46.0), (4, 45.0), (2, 46.0), (0, 45.0)]))
+    assert burn == 0.0
+
+
+def test_a_reset_from_a_near_idle_window_is_caught_by_its_reset_time():
+    # 2% -> 0% falls inside the wobble; the reset time moving five hours says it was a reset,
+    # so only the 0 -> 4 run over ten minutes counts (24%/h, not 6%/h).
+    old, new = "2026-09-02T00:00:00Z", "2026-09-02T05:00:00Z"
+    samples = [s + (r,) for s, r in zip(_samples([(20, 2.0), (10, 0.0), (0, 4.0)]), (old, new, new))]
+    burn = calc.burn_pct_per_hour(samples)
+    assert burn is not None and abs(burn - 24.0) < 0.01
+
+
+def test_a_reset_time_jitter_of_minutes_is_the_same_window():
+    a, b = "2026-09-02T00:00:00Z", "2026-09-02T00:01:30Z"
+    samples = [s + (r,) for s, r in zip(_samples([(20, 40.0), (10, 42.0), (0, 44.0)]), (a, b, a))]
+    burn = calc.burn_pct_per_hour(samples)
+    assert burn is not None and abs(burn - 12.0) < 0.01
+
+
 def test_burn_rate_is_unknown_when_the_newest_reading_is_stale():
     # No live session for hours: the last readings are from the morning. With the clock given,
     # a newest reading older than the window is no reading at all -- the phone showed

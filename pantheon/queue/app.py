@@ -102,7 +102,9 @@ class QueueApp(App):
             return
         width = self.size.width
         framed = width >= self.FRAME_AT
-        self.pane.set_class(framed, "framed")
+        if framed != self.pane.has_class("framed"):
+            self.pane.set_class(framed, "framed")
+            self.pane._paint_header()   # the header names a drilled project only when unframed
         if not framed:
             self.pane.border_title = ""
             self.pane.border_subtitle = ""

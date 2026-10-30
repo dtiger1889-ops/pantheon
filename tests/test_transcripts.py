@@ -239,3 +239,51 @@ def test_is_dispatch_title_matches_case_and_whitespace_insensitively(title):
 ])
 def test_is_dispatch_title_rejects_anything_else(title):
     assert not transcripts_mod.is_dispatch_title(title)
+
+# Failure-path additions use only synthetic transcripts.
+def test_empty_transcript_has_no_turn_data(tmp_path):
+    home = _write(tmp_path, [])
+    info = transcripts_mod.read_transcript(SESSION_ID, CWD, claude_home=home)
+    assert info.model is None and info.tokens == 0
+    assert info.actions == () and info.last_text is None and info.last_ask is None
+
+
+def test_non_object_json_lines_are_ignored(tmp_path):
+    home = _write(tmp_path, [None, [], 42, "not a record", _assistant(), {"type": "unknown"}])
+    info = transcripts_mod.read_transcript(SESSION_ID, CWD, claude_home=home)
+    assert info.model == "claude-opus-5-5" and info.tokens == 3102
+
+
+def test_null_usage_values_count_as_zero(tmp_path):
+    home = _write(tmp_path, [_assistant(usage={"input_tokens": None, "output_tokens": 7})])
+    assert transcripts_mod.read_transcript(SESSION_ID, CWD, claude_home=home).tokens == 7
+
+
+def test_non_object_content_parts_do_not_hide_valid_actions(tmp_path):
+    home = _write(tmp_path, [_assistant(content=[None, 12, "unknown",
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "a.txt"}}])])
+    info = transcripts_mod.read_transcript(SESSION_ID, CWD, claude_home=home)
+    assert [action.text for action in info.actions] == ["Read a.txt"]
+
+
+def test_scan_read_error_does_not_poison_cache(tmp_path, monkeypatch):
+    home = _write(tmp_path, [_assistant()])
+    real_scan = transcripts_mod._scan
+    def unavailable(path):
+        raise PermissionError("synthetic access failure")
+    monkeypatch.setattr(transcripts_mod, "_scan", unavailable)
+    assert transcripts_mod.read_transcript(SESSION_ID, CWD, claude_home=home) == transcripts_mod.TranscriptInfo()
+    monkeypatch.setattr(transcripts_mod, "_scan", real_scan)
+    assert transcripts_mod.read_transcript(SESSION_ID, CWD, claude_home=home).model == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize("record", [
+    {"type": "assistant", "message": "broken"},
+    _assistant(usage={"input_tokens": "oops"}),
+    _assistant(content=[{"type": "tool_use", "name": "Read", "input": ["broken"]}]),
+    _user_text([{"type": "text", "text": None}]),
+], ids=["message-type", "token-type", "tool-input-type", "null-user-text"])
+def test_malformed_nested_record_never_raises(tmp_path, record):
+    home = _write(tmp_path, [_assistant(), record])
+    assert isinstance(transcripts_mod.read_transcript(SESSION_ID, CWD, claude_home=home),
+                      transcripts_mod.TranscriptInfo)

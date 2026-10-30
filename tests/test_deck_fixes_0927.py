@@ -172,11 +172,18 @@ def test_the_desk_table_names_the_assistant_not_its_last_folder(tmp_path, monkey
             sup.refresh_rows()
             await pilot.pause()
             now = pane_mod.datetime.now(pane_mod.timezone.utc)
+            # The desk's two-line rows: the title says Assistant, no folder after it.
+            got["desk"] = sup._cell_values(sup.table_rows[0], now)[0]
+            sup._table_view = True                 # `f`: the column table
+            sup._apply_columns(sup.size.width)
             col = [key for key, _, _ in sup._columns].index("project")
             got["project"] = {r.session_id: sup._cell_values(r, now)[col] for r in sup.table_rows}
             got["title"] = sup._detail_title(rows[0])
 
     asyncio.run(drive())
+    first, second = got["desk"].splitlines()
+    assert "Assistant" in first
+    assert "project_pantheon" not in second
     assert got["project"] == {"5f40ea10": "Assistant", "life-os": "life-os"}
     assert got["title"].startswith("Assistant · ")
 

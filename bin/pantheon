@@ -310,7 +310,65 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   # log and events out of the live deck's state folder; unset, this is the project's own state/.
   STATE="${PANTHEON_STATE_DIR:-$ROOT/state}"
   mkdir -p "$STATE/agents" "$STATE/statusline" "$STATE/dispatch" "$STATE/limits"
+  # The server-exit log, OFF by default: -v logs every
+  # drawn character on tmux's only thread (93,706 lines/s, ~4 MB/s), which lagged every window;
+  # `kill -USR2 <server msys pid>` toggles it live. `server_log = true` under [health] in
+  # pantheon.toml turns it on: the server then runs with tmux's own log (-v), which tmux writes
+  # into the folder it was started from, so start it from state/health/tmux-log/. The watcher
+  # caps it (pantheon/health/server_log.py) and reads its end when the server is gone.
+  # `enabled = false` there keeps it off too: no watcher means nothing caps the log.
+  # The config's own parser decides, so off/no/0 count too.
+  # The exit record: when no server runs, start
+  # one in the foreground (-D) under a small parent that appends its exit code and time to
+  # server-exits.jsonl beside tmux-log/ (137 = killed by force, 139 = crashed; a crash also leaves
+  # tmux.exe.core in tmux-log/, which the exit capture moves into its folder). setsid detaches the parent from
+  # this shell; the wait stops `new-session` starting an ordinary server first (a race seen on a
+  # throwaway server). If the -D server never answers, `new-session` starts an ordinary
+  # one so the deck still comes up, and that start is recorded and printed as unrecorded. -D turns
+  # exit-empty off, so it is switched back on, for the -D server only.
+  # The folder comes from the same config the exit capture reads (pantheon/health/sample.py
+  # health_dir), made absolute before the cd.
+  # -c keeps every window in $ROOT. A server that already runs (other sessions) is not changed.
+  HEALTH_BASE="$(PANTHEON_SESSION="$SESSION" "$PY" -c 'import pantheon.config as c, pantheon.health.sample as s; print(s.health_dir(c.load()))' 2>/dev/null </dev/null)"
+  if [ -z "$HEALTH_BASE" ]; then
+    HEALTH_BASE="$STATE/health"
+    [ "$SESSION" = pantheon ] || HEALTH_BASE="$HEALTH_BASE/$SESSION"
+  fi
+  SERVER_LOG_DIR="$HEALTH_BASE/tmux-log"
+  mkdir -p "$SERVER_LOG_DIR" 2>/dev/null && SERVER_LOG_DIR="$(cd "$SERVER_LOG_DIR" && pwd)"
+  EXIT_RECORDS="${SERVER_LOG_DIR%/tmux-log}/server-exits.jsonl"
+  SERVER_LOG="$("$PY" -c 'import pantheon.config as c; h = c.load().health_settings(); print(h.enabled and h.server_log)' 2>/dev/null </dev/null)"
+  SERVER_V=""
+  [ "$SERVER_LOG" = True ] && SERVER_V="-v"
+  STARTED_D=""
+  case "$(tmux list-sessions 2>&1 >/dev/null)" in
+    *"no server running"*|*"error connecting"*)
+      STARTED_D=1
+      (cd "$SERVER_LOG_DIR" && setsid -f bash -c '
+        started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        ulimit -c unlimited 2>/dev/null   # a crash leaves tmux.exe.core here
+        tmux $2 -D </dev/null >/dev/null 2>&1 & pid=$!
+        wait "$pid"; rc=$?
+        sig=null; [ "$rc" -gt 128 ] && sig=$((rc - 128))
+        printf "{\"msys_pid\": %s, \"exit_code\": %s, \"signal\": %s, \"started\": \"%s\", \"ended\": \"%s\"}\n" \
+          "$pid" "$rc" "$sig" "$started" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$1"
+      ' pantheon-exit-record "$EXIT_RECORDS" "$SERVER_V" </dev/null >/dev/null 2>&1)
+      for _ in $(seq 1 100); do
+        case "$(tmux list-sessions 2>&1 >/dev/null)" in
+          *"no server running"*|*"error connecting"*) sleep 0.1 ;;
+          *) break ;;
+        esac
+      done
+      case "$(tmux list-sessions 2>&1 >/dev/null)" in
+        *"no server running"*|*"error connecting"*)
+          STARTED_D=""
+          printf '{"note": "unrecorded start: the -D server did not answer in 10 s", "at": "%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$EXIT_RECORDS" 2>/dev/null
+          echo "pantheon: the exit-recording tmux server did not start; starting an ordinary one (no exit record)" >&2 ;;
+      esac ;;
+  esac
   tmux new-session -d -s "$SESSION" -n DECK  -c "$ROOT" "$(wrap pantheon.deck)"
+  [ -n "$STARTED_D" ] && tmux set-option -s exit-empty on
   tmux new-window  -t "$SESSION" -n QUEUE   -c "$ROOT" "$(wrap pantheon.queue)"
   # The budget window: the usage collector runs in the background of the same pane (its own
   # single-threaded process -- pantheon/hud/collector.py says why) and ends when the window does.

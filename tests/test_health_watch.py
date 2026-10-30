@@ -174,6 +174,246 @@ def test_no_server_is_one_log_line_and_the_watcher_leaves(tmp_path):
     assert rig.w.leaving and rig.alerts == [] and rig.restarts == [] and rig.spawned == []
 
 
+# --------------------------------------------------------------------------- the server-exit path
+
+
+def _with_server_log(monkeypatch, tmp_path, lines=("srv line 1", "srv line 2")):
+    """Give the fake server pid 77 a working folder holding its tmux log. /proc/<pid>/cwd is a
+    link MSYS2 cannot fake in a temp folder (its symlinks are copies), so the lookup is patched."""
+    from pantheon.health import server_log
+    cwd = tmp_path / "srvcwd"
+    cwd.mkdir(exist_ok=True)
+    log_file = cwd / "tmux-server-77.log"
+    log_file.write_text("\n".join(lines) + "\n")
+    monkeypatch.setattr(server_log, "server_log_path",
+                        lambda pid, proc_root="/proc": cwd / f"tmux-server-{int(pid)}.log")
+    return log_file
+
+
+def test_a_server_that_answered_then_went_away_leaves_an_exit_capture_and_an_alert(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, outcomes=["ok", "gone"], server_log=True)
+    log_file = _with_server_log(monkeypatch, tmp_path)
+    rig.w.kill = lambda pid, sig: None
+    assert rig.w.loop(max_cycles=5) == 2
+    exits = sorted(watch.health_dir(rig.cfg).glob("exit-*"))
+    assert len(exits) == 1
+    manifest = json.loads((exits[0] / "manifest.json").read_text())
+    assert manifest["planned"] is False and manifest["server_log"] == str(log_file)
+    assert "srv line 2" in (exits[0] / "tmux-server-log-tail.txt").read_text()
+    assert any("windows events" == t["item"] for t in manifest["taken"])
+    assert [t for t, _ in rig.toasts] == ["Pantheon's tmux server ended"]
+    assert "/" not in rig.toasts[0][1] and "\\" not in rig.toasts[0][1]   # lock-screen text: no path
+
+
+def test_a_full_restart_under_way_is_captured_without_an_alert(tmp_path):
+    rig = Rig(tmp_path, outcomes=["ok", "gone"])
+    snap = fullrestart.snapshot_path(rig.cfg)
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_text("{}")
+    os.utime(snap, (rig.clock(), rig.clock()))
+    rig.w.loop(max_cycles=5)
+    exits = sorted(watch.health_dir(rig.cfg).glob("exit-*"))
+    assert len(exits) == 1 and json.loads((exits[0] / "manifest.json").read_text())["planned"] is True
+    assert rig.alerts == []
+
+
+def test_a_crash_minutes_after_a_finished_restart_still_alerts(tmp_path):
+    # The restart that started this server wrote its snapshot before the server was up.
+    rig = Rig(tmp_path, outcomes=["ok", "gone"])
+    snap = fullrestart.snapshot_path(rig.cfg)
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_text("{}")
+    os.utime(snap, (rig.clock() - 120, rig.clock() - 120))
+    rig.w.loop(max_cycles=5)
+    exits = sorted(watch.health_dir(rig.cfg).glob("exit-*"))
+    assert len(exits) == 1 and json.loads((exits[0] / "manifest.json").read_text())["planned"] is False
+    assert [t for t, _ in rig.toasts] == ["Pantheon's tmux server ended"]
+
+
+def test_a_throwaway_deck_never_alerts_on_exit(tmp_path):
+    rig = Rig(tmp_path, outcomes=["ok", "gone"])
+    rig.cfg = rig.w.cfg = config_mod.Config(state_dir=str(tmp_path / "state"), health={},
+                                            tmux_session="pantheon-test")
+    rig.w.loop(max_cycles=5)
+    assert rig.alerts == []
+
+
+def test_server_log_is_switched_on_once_when_missing_and_rolled_over_past_the_cap(tmp_path, monkeypatch):
+    from pantheon.health import server_log
+    log_file = _with_server_log(monkeypatch, tmp_path)
+    log_file.unlink()
+    exename = tmp_path / "proc" / "77" / "exename"
+    exename.parent.mkdir(parents=True, exist_ok=True)
+    exename.write_text("/usr/bin/tmux\n")
+    signals, state = [], {}
+    keep = lambda: server_log.keep(state, 77, 1, kill=lambda pid, sig: signals.append((pid, sig)),
+                                   proc_root=str(tmp_path / "proc"))
+    assert keep() == "on" and len(signals) == 1
+    assert keep() is None and len(signals) == 1           # never toggled back off
+    log_file.write_bytes(b"x" * (1024 * 1024 + 1))
+    assert keep() == "rotated" and len(signals) == 3
+    assert (log_file.parent / "tmux-server-77.log.prev").exists() and not log_file.exists()
+    assert state["server_log"] == str(log_file)
+
+
+def test_server_log_never_signals_a_pid_that_is_no_longer_tmux(tmp_path, monkeypatch):
+    from pantheon.health import server_log
+    log_file = _with_server_log(monkeypatch, tmp_path)
+    log_file.unlink()
+    exename = tmp_path / "proc" / "77" / "exename"
+    exename.parent.mkdir(parents=True, exist_ok=True)
+    exename.write_text("/usr/bin/bash\n")                  # the server died; its pid was reused
+    signals = []
+    assert server_log.keep({}, 77, 1, kill=lambda pid, sig: signals.append(sig),
+                           proc_root=str(tmp_path / "proc")) is None
+    assert signals == []
+
+
+def test_the_default_never_switches_the_server_log_on(tmp_path, monkeypatch):
+    # tmux -v logs every drawn character on its only thread and lagged every window.
+    rig = Rig(tmp_path, outcomes=["ok", "gone"])
+    _with_server_log(monkeypatch, tmp_path).unlink()
+    (tmp_path / "proc" / "77" / "exename").write_text("/usr/bin/tmux\n")
+    signals = []
+    rig.w.kill = lambda pid, sig: signals.append(sig)
+    rig.w.loop(max_cycles=5)
+    assert signals == []
+
+
+def test_with_the_log_off_an_older_servers_log_is_not_captured(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, outcomes=["ok", "gone"])
+    rig.w.state["server_log"] = str(_with_server_log(monkeypatch, tmp_path))   # left by an old watcher
+    rig.w.kill = lambda pid, sig: None
+    rig.w.loop(max_cycles=5)
+    exits = sorted(watch.health_dir(rig.cfg).glob("exit-*"))
+    assert len(exits) == 1
+    assert json.loads((exits[0] / "manifest.json").read_text())["server_log"] is None
+    assert not (exits[0] / "tmux-server-log-tail.txt").exists()
+
+
+@pytest.fixture(autouse=True)
+def _no_exit_record_wait(monkeypatch):
+    from pantheon.health import capture
+    monkeypatch.setattr(capture, "EXIT_RECORD_WAIT_SECONDS", 0)
+
+
+def _tmux_exename(tmp_path):
+    (tmp_path / "proc" / "77" / "exename").write_text("/usr/bin/tmux\n")
+
+
+def test_tmux_log_runs_only_while_the_server_is_not_answering(tmp_path, monkeypatch):
+    import signal as signal_mod
+    rig = Rig(tmp_path, outcomes=["ok", "timeout", "ok"])
+    log_file = _with_server_log(monkeypatch, tmp_path)
+    log_file.unlink()
+    _tmux_exename(tmp_path)
+    signals = []
+    rig.w.kill = lambda pid, sig: signals.append((pid, sig))
+    rig.w.cycle()
+    assert signals == []                                   # answering: no log
+    rig.w.cycle()
+    assert signals == [(77, signal_mod.SIGUSR2)]           # first missed probe: on
+    log_file.write_text("what tmux did as it came back\n")
+    rig.w.cycle()
+    assert signals == [(77, signal_mod.SIGUSR2)] * 2       # answers again: off
+    assert not log_file.exists()                           # no capture took it: removed
+    assert "freeze_log_pid" not in rig.w.state
+
+
+def test_a_stall_capture_keeps_the_tmux_log_it_took(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, outcomes=["ok", "timeout", "timeout", "timeout", "ok"])
+    log_file = _with_server_log(monkeypatch, tmp_path, lines=("came back at last",))
+    _tmux_exename(tmp_path)
+    rig.w.kill = lambda pid, sig: None
+    for _ in range(4):
+        rig.w.cycle()
+    stalls = sorted(watch.health_dir(rig.cfg).glob("stall-*"))
+    assert len(stalls) == 1
+    assert "came back at last" in (stalls[0] / "tmux-server-log-tail.txt").read_text()
+    assert log_file.exists() and "freeze_log_pid" not in rig.w.state
+
+
+def test_a_server_that_dies_during_the_freeze_capture_still_gets_an_exit_capture(tmp_path):
+    rig = Rig(tmp_path, outcomes=["ok", "timeout", "timeout", "timeout", "gone"])
+    rig.w.kill = lambda pid, sig: None
+    for _ in range(4):
+        rig.w.cycle()
+    health = watch.health_dir(rig.cfg)
+    assert len(list(health.glob("freeze-*"))) == 1 and len(list(health.glob("exit-*"))) == 1
+    assert rig.restarts                                    # the restart still went ahead
+
+
+def test_with_the_log_always_on_the_freeze_capture_takes_its_tail(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, outcomes=["ok", "timeout", "timeout", "timeout", "timeout"], server_log=True)
+    _with_server_log(monkeypatch, tmp_path, lines=("always on",))
+    _tmux_exename(tmp_path)
+    rig.w.kill = lambda pid, sig: None
+    for _ in range(4):
+        rig.w.cycle()
+    freezes = sorted(watch.health_dir(rig.cfg).glob("freeze-*"))
+    assert "always on" in (freezes[0] / "tmux-server-log-tail.txt").read_text()
+
+
+def test_an_always_on_server_log_is_never_toggled_by_a_missed_probe(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, outcomes=["ok", "timeout", "ok"], server_log=True)
+    _with_server_log(monkeypatch, tmp_path)                # exists, so keep() leaves it alone
+    _tmux_exename(tmp_path)
+    signals = []
+    rig.w.kill = lambda pid, sig: signals.append(sig)
+    for _ in range(3):
+        rig.w.cycle()
+    assert signals == []
+
+
+def test_the_exit_capture_holds_the_parent_record_and_asks_windows_for_tmux_exits(tmp_path):
+    rig = Rig(tmp_path, outcomes=["ok", "gone"])
+    record = {"msys_pid": 77, "exit_code": 137, "signal": 9, "started": "2027-01-15T07:00:00Z",
+              "ended": "2027-01-15T08:00:30Z"}
+    health = watch.health_dir(rig.cfg)
+    health.mkdir(parents=True, exist_ok=True)
+    (health / "server-exits.jsonl").write_text(
+        json.dumps(dict(record, msys_pid=12)) + "\n" + json.dumps(record) + "\n")
+    rig.w.loop(max_cycles=5)
+    exits = sorted(health.glob("exit-*"))
+    assert len(exits) == 1
+    assert json.loads((exits[0] / "exit-record.json").read_text()) == record
+    assert any("4689" in " ".join(argv) for argv in rig.spawned)
+
+
+def test_an_old_record_with_the_same_pid_is_not_taken_for_this_exit(tmp_path):
+    rig = Rig(tmp_path, outcomes=["ok", "gone"])
+    health = watch.health_dir(rig.cfg)
+    health.mkdir(parents=True, exist_ok=True)
+    (health / "server-exits.jsonl").write_text(json.dumps(
+        {"msys_pid": 77, "exit_code": 139, "signal": 11, "started": "2026-01-01T00:00:00Z",
+         "ended": "2026-01-01T01:00:00Z"}) + "\n")            # a pid reused since that crash
+    rig.w.loop(max_cycles=5)
+    exits = sorted(health.glob("exit-*"))
+    assert not (exits[0] / "exit-record.json").exists()
+
+
+def test_a_crash_dump_moves_into_the_exit_capture(tmp_path):
+    rig = Rig(tmp_path, outcomes=["ok", "gone"])
+    logs = watch.health_dir(rig.cfg) / "tmux-log"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "tmux.exe.core").write_bytes(b"core")
+    rig.w.loop(max_cycles=5)
+    exits = sorted(watch.health_dir(rig.cfg).glob("exit-*"))
+    assert (exits[0] / "tmux.exe.core").read_bytes() == b"core"
+    assert not (logs / "tmux.exe.core").exists()
+
+
+def test_exit_capture_reads_the_rotated_log_when_the_live_one_is_nearly_empty(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, outcomes=["ok", "gone"], server_log=True)
+    log_file = _with_server_log(monkeypatch, tmp_path, lines=("fresh after rotation",))
+    (log_file.parent / (log_file.name + ".prev")).write_text("the minutes before the exit\n")
+    rig.w.kill = lambda pid, sig: None
+    rig.w.loop(max_cycles=5)
+    [folder] = sorted(watch.health_dir(rig.cfg).glob("exit-*"))
+    text = (folder / "tmux-server-log-tail.txt").read_text()
+    assert text.index("the minutes before the exit") < text.index("fresh after rotation")
+
+
 def test_single_instance_pid_file(tmp_path):
     cfg = _cfg(tmp_path)
     watch.pid_path(cfg).parent.mkdir(parents=True)
@@ -672,7 +912,7 @@ def test_only_empty_shells_untouched_for_five_minutes_are_closed(tmp_path):
     rig.w.run = rig.tmux = PaneTmux([
         _pane("%1", "100", old, "DECK"),                      # deck window: never
         _pane("%2", "200", old, "garden_notes"),               # bash with python under it
-        _pane("%3", "300", old, "deal_crawler", "C:\\Users\\x\\.local\\bin\\claude.exe"),
+        _pane("%3", "300", old, "price_watch", "C:\\Users\\x\\.local\\bin\\claude.exe"),
         _pane("%4", "400", old, "work_stuff"),                # empty bash, 6 min: closed
         _pane("%5", "401", fresh, "obsidian"),                # empty bash, 1 min: kept
         _pane("%6", "402", old, "C:\\x\\pwsh.exe", "C:\\x\\pwsh.exe"),   # native shell: kept

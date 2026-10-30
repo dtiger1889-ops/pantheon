@@ -127,3 +127,49 @@ def test_one_sized_row_keeps_the_all_worker_width():
     medium = fit.token_table(rows)[("claude", "medium")]
     assert medium.basis == P.FEW and medium.tokens == 150_000
     assert medium.spread[0] < 1.0 < medium.spread[1]
+
+
+def _batch_afters(sizes_tokens):
+    """Workers launched together: one `before --batch`, then afters with no before of their own."""
+    rows = [{"utc": "2026-09-25T11:00:00Z", "event": "start", "five_hour": 10,
+             "five_hour_resets_at": RESET, "seven_day": 30, "seven_day_resets_at": WEEK_RESET},
+            {"utc": "2026-09-25T11:01:00Z", "event": "before", "repo": "", "batch": True,
+             "five_hour": 11, "five_hour_resets_at": RESET, "seven_day": 30,
+             "seven_day_resets_at": WEEK_RESET}]
+    for i, (size, tok) in enumerate(sizes_tokens):
+        rows.append({"utc": f"2026-09-25T11:{10 + i}:00Z", "event": "after", "repo": f"w{i}",
+                     "five_hour": 20 + i, "five_hour_resets_at": RESET, "seven_day": 31,
+                     "seven_day_resets_at": WEEK_RESET, "tokens": tok, "size": size})
+    return rows
+
+
+def test_size_survives_batch_pairing_into_the_token_table():
+    """An after paired to a `before --batch` anchor keeps its own size: the size lives on the
+    after row, so the per-size table reads it whatever the points pairing does."""
+    rows = _batch_afters([("small", 40_000), ("small", 60_000), ("large", 300_000)])
+    pairs, _, batched = limits._match(rows)
+    assert not pairs and [a["size"] for _, a in batched] == ["small", "small", "large"]
+    table = fit.token_table(rows)
+    assert table[("claude", "small")].tokens == 50_000 and table[("claude", "small")].count == 2
+    assert table[("claude", "large")].tokens == 300_000
+    # medium has no sized row: it still falls back to the median of every finished worker
+    assert table[("claude", "medium")].basis == P.ALL_WORKERS
+    assert table[("claude", "medium")].tokens == 60_000
+
+
+def test_few_sized_rows_replace_the_median_but_stay_wide_until_five():
+    few = fit.token_table(_batch_afters([("small", 40_000), ("large", 300_000), ("large", 320_000)]))
+    assert few[("claude", "small")].basis == P.FEW and few[("claude", "small")].tokens == 40_000
+    five = [("small", 40_000 + 1000 * i) for i in range(P.MIN_ROWS_FOR_INTERVAL)]
+    assert fit.token_table(_batch_afters(five))[("claude", "small")].basis == P.FITTED
+
+
+def test_usage_mark_cli_after_size_writes_the_row(tmp_path, monkeypatch, capsys):
+    cfg = config.Config(state_dir=str(tmp_path / "state"))
+    config.ensure_state_dirs(cfg)
+    monkeypatch.setattr(config, "load", lambda *a, **k: cfg)
+    assert limits.main(["after", "--repo", "x", "--tokens", "9", "--size", "large"]) == 0
+    assert json.loads(capsys.readouterr().out)["size"] == "large"
+    assert limits.read_rows(cfg)[-1]["size"] == "large"
+    with pytest.raises(SystemExit):
+        limits.main(["after", "--size", "huge"])

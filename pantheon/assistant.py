@@ -31,6 +31,7 @@ from typing import Callable, Iterable, Optional
 
 from . import config as config_mod
 from . import eventcache as eventcache_mod
+from . import events as events_mod
 from . import tmuxctl
 from . import transcripts as transcripts_mod
 from .models import AgentState, AgentStatus, Event, TmuxWindow, parse_ts
@@ -133,6 +134,7 @@ def learn(cfg: config_mod.Config, events: Optional[Iterable[Event]] = None) -> O
     pane, since = state.get("pane_id"), _when(state.get("started_at"))
     if not pane or since is None:
         return state.get("session_id")
+    folder = events_mod.norm_path(state.get("folder") or cfg.assistant_settings().folder)
     if events is None:
         try:
             events, _errors = eventcache_mod.read_events_cached(cfg.events_file)
@@ -144,6 +146,12 @@ def learn(cfg: config_mod.Config, events: Optional[Iterable[Event]] = None) -> O
         if e.event != "SessionStart" or e.source != "claude" or e.agent_id or not e.session_id:
             continue
         if e.tmux_pane != pane:
+            continue
+        # Pane ids restart at %0 with each tmux server, so after a restart another session can
+        # start in a pane number the record still holds (another project's resumed session took
+        # the old Assistant pane and was adopted as the Assistant). Only a start in the
+        # Assistant's own folder counts.
+        if folder and e.cwd and events_mod.norm_path(e.cwd) != folder:
             continue
         when = _when(e.ts)
         if when is None or when < since:
@@ -395,8 +403,12 @@ def _launch(cfg: config_mod.Config, folder: str, provider, tmux: Optional[str],
 # %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming. A process inside the app sees the plain path;
 # the Assistant (tmux over ssh) sees only the redirected one.
 # The real, redirected folder is searched first; it is the one Dispatch actually writes to.
+# Newer Desktop builds keep their data in %LOCALAPPDATA%\Claude-Data\claude_* (a
+# `.user-data-left.*` marker stays in the old folder), so that root comes first; reading the old
+# path alone would find an empty memory.
 _LOCAL = Path(os.environ.get("LOCALAPPDATA", f"{config_mod.HOME}/AppData/Local"))
 DISPATCH_SESSION_ROOTS = [
+    *sorted(_LOCAL.glob("Claude-Data/claude_*/local-agent-mode-sessions")),
     *sorted(_LOCAL.glob("Packages/Claude_*/LocalCache/Roaming/Claude/local-agent-mode-sessions")),
     Path(os.environ.get("APPDATA", f"{config_mod.HOME}/AppData/Roaming")) / "Claude" / "local-agent-mode-sessions",
 ]
@@ -405,6 +417,14 @@ MEMORY_PROMPT_FILE = "assistant_memory_prompt.md"
 MEMORY_PROMPT = """You are the user's always-on Pantheon Assistant: the Claude Code stand-in for Claude Desktop's Dispatch.
 You are an easy assistant for quick asks (notes, calendar, small research, small file edits), not a
 consciously managed project session.
+
+You are an assistant: you help. When the user asks something, first use the existing information in
+their workspace and their own systems (the project that owns the topic, and any data it already
+keeps), then, if more recent information would help, go find it on the web. Say which source each
+part of the answer came from. Always behave like an executive assistant: hand them the finished
+thing, ready to act on -- every deal, product, place or page you name comes with its link, and
+nothing is left for them to go look up. Any packaged consumable (food, supplements, batteries and the
+like) always gets a standardized unit price beside its price: per ounce, liter, count or serving.
 
 When the user states a preference about an item already filed (a todo, a task row, a note), record
 it on that item stamped `User decision -- <date>` and stop there: never open project code or start
@@ -420,6 +440,12 @@ use the Agent tool for this. The session opens in its own deck window with Remot
 reply with the line the command prints plus the session's name (the folder name, or
 "<folder>: <first line of the message>") so they can tap it in the Claude app's Code list. A
 `--who codex-pc` session opens only on the PC screen, so say so before starting one for the phone.
+
+When the user names one of their projects in their own words ("my comparison tool"), and they keep
+a project ledger (one row per project with its purpose), your first call is one grep of that
+ledger for the word. Then work inside that one folder. Never start with a recursive grep or find
+across the whole projects folder, and never bundle one with the ledger grep: a large synced folder
+makes the search time out.
 
 You share Dispatch's long-term memory, in {memory}. At the start of a conversation read MEMORY.md
 there (an index, one line per note) and open a linked note whenever it bears on the ask. When you

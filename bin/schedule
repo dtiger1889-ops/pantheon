@@ -3,6 +3,13 @@
 # Runs once and exits; Windows Task Scheduler does the waiting, one one-shot entry per start.
 #   bin/schedule <project> --at 06:00 [--who claude|codex-pc|codex-headless] [--model M]
 #                [--effort E] [--mode MODE] [--message TEXT] [--preset NAME] [--force]
+#   bin/schedule <project> --at reset ...      next five-hour reset +2 min (from state/hud.json);
+#                                              --at weekly-reset for the weekly one
+#   bin/schedule --session NAME --at reset --prompt "TEXT"      (or --prompt-file PATH)
+#                [--or-new <project>]   type into the EXISTING session whose window is NAME; waits
+#                                       for an idle prompt (looks each minute, 30 times, then
+#                                       gives up and notifies); a gone session is logged, and
+#                                       --or-new starts a new one in <project> instead
 #   bin/schedule --list            what is waiting, and how the ones that ran went
 #   bin/schedule --cancel <id>     take one off
 # If 06:00 lands inside a usage window already past the governor's wind-down line, it says so

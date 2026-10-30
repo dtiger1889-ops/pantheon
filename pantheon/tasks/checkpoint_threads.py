@@ -85,6 +85,55 @@ def _split_bullets(section: str) -> list[str]:
     return [b for b in bullets if b]
 
 
+def _bracket_tags(text: str) -> list[str]:
+    """The contents of each top-level `[...]` in `text` that is a tag, not prose: a bracket inside
+    an inline code span (`` `[the user]` `` quoting a legend), a markdown link `[the user](url)`,
+    and a bracket holding another bracket (`[example [the user]]`, and so the inner one too) are
+    skipped. Backticks INSIDE a tag stay part of it (`[gates: ... at `C:/some/folder`]`)."""
+    tags: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "`":
+            close = text.find("`", i + 1)
+            i = n if close == -1 else close + 1
+            continue
+        if ch != "[":
+            i += 1
+            continue
+        depth, j, nested = 1, i + 1, False
+        while j < n and depth:
+            if text[j] == "[":
+                depth += 1
+                nested = True
+            elif text[j] == "]":
+                depth -= 1
+            j += 1
+        if depth:                               # unclosed bracket: plain text
+            i += 1
+            continue
+        if not nested and not text.startswith("(", j):
+            tags.append(text[i + 1 : j - 1])
+        i = j
+    return tags
+
+
+def _tags(text: str) -> tuple[str, str, Optional[str]]:
+    """(owner, priority, gates) from the bracket tags in `text`; the first of each kind wins."""
+    owner, priority, gates = "unknown", "normal", None
+    for tag in _bracket_tags(text):
+        low = tag.strip().lower()
+        gate_m = _GATES_RE.match(tag.strip())
+        if gate_m is not None:
+            gates = gates or gate_m.group(1).strip()
+        elif low in ("the user", "agent") and owner == "unknown":
+            owner = low
+        elif low in ("low", "high") and priority == "normal":
+            priority = low
+        # any other bracket tag is left alone -- the parser is tolerant of a project's own vocabulary
+    return owner, priority, gates
+
+
 def _parse_bullet(bullet: str) -> Thread:
     m = _BOLD_RE.match(bullet)
     if m is not None:
@@ -98,23 +147,16 @@ def _parse_bullet(bullet: str) -> Thread:
         else:
             bold, rest = bullet[: sentence_end + 1].rstrip("."), bullet[sentence_end + 2:].strip()
 
-    owner = "unknown"
-    priority = "normal"
-    gates: Optional[str] = None
-    for tag in _BRACKET_RE.findall(bold):
-        low = tag.strip().lower()
-        gate_m = _GATES_RE.match(tag.strip())
-        if gate_m is not None:
-            gates = gate_m.group(1).strip()
-        elif low == "the user":
-            owner = "the user"
-        elif low == "agent":
-            owner = "agent"
-        elif low == "low":
-            priority = "low"
-        elif low == "high":
-            priority = "high"
-        # any other bracket tag is left alone -- the parser is tolerant of a project's own vocabulary
+    owner, priority, gates = _tags(bold)
+    # Most projects write the tags at the END of the bullet (`... No pointer. [agent] [low]`), not
+    # in the bold title; a field the title leaves unset falls back to the first tag in the rest.
+    rest_owner, rest_priority, rest_gates = _tags(rest)
+    if owner == "unknown":
+        owner = rest_owner
+    if priority == "normal":
+        priority = rest_priority
+    if gates is None:
+        gates = rest_gates
 
     title = _BRACKET_RE.sub("", bold).strip()
     title = re.sub(r"\s+", " ", title).strip().rstrip(".").strip()

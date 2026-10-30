@@ -35,6 +35,7 @@ changed since the last tick.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
@@ -139,13 +140,20 @@ def _typed_text(rec: dict) -> Optional[str]:
     if isinstance(content, list):
         if any(isinstance(p, dict) and p.get("type") == "tool_result" for p in content):
             return None
-        content = " ".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+        content = " ".join(str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text")
     if not isinstance(content, str):
         return None
     content = " ".join(content.split())
     if not content or content.startswith("<"):
         return None
     return content
+
+
+def _token_count(value) -> int:
+    """One usage field as a whole number; anything that is not a number counts as nothing."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return 0
+    return int(value)
 
 
 def _tool_file(input_: dict) -> Optional[str]:
@@ -190,19 +198,25 @@ def _scan(path: Path) -> TranscriptInfo:
                 last_ask = _typed_text(rec)
             if not isinstance(rec, dict) or rec.get("type") != "assistant":
                 continue
-            message = rec.get("message") or {}
+            message = rec.get("message")
+            if not isinstance(message, dict):
+                message = {}
             if not got_latest:
                 model = message.get("model")
                 effort = rec.get("effort")
-                usage = message.get("usage") or {}
-                tokens = int(sum((usage.get(k) or 0) for k in _USAGE_KEYS))
+                usage = message.get("usage")
+                if not isinstance(usage, dict):
+                    usage = {}
+                tokens = int(sum(_token_count(usage.get(k)) for k in _USAGE_KEYS))
                 got_latest = True
             for part in reversed(message.get("content") or []):
                 if not isinstance(part, dict):
                     continue
                 kind = part.get("type")
                 if kind == "tool_use" and len(actions) < MAX_ACTIONS:
-                    input_ = part.get("input") or {}
+                    input_ = part.get("input")
+                    if not isinstance(input_, dict):
+                        input_ = {}
                     actions.append(ToolAction(part.get("name") or "?", _tool_file(input_), _tool_detail(input_)))
                 elif kind == "text" and last_text is None:
                     text = part.get("text")

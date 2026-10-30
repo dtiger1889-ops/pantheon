@@ -296,6 +296,21 @@ def test_session_env_override_wins_over_the_file(tmp_path, monkeypatch):
     assert config.load(tmp_path / "missing.toml").tmux_session == "pantheon-s34"
 
 
+def test_provider_home_env_overrides_win_over_the_file(tmp_path, monkeypatch):
+    """The walk suite's empty $HOME never reached the file's absolute provider folders, so its
+    throwaway deck read the real login and Codex logs."""
+    p = tmp_path / "p.toml"
+    p.write_text('claude_home = "C:/real/.claude"\ncodex_home = "C:/real/.codex"\n', encoding="utf-8")
+    monkeypatch.delenv("PANTHEON_CLAUDE_HOME", raising=False)
+    monkeypatch.delenv("PANTHEON_CODEX_HOME", raising=False)
+    assert config.load(p).claude_home == "C:/real/.claude"
+    monkeypatch.setenv("PANTHEON_CLAUDE_HOME", str(tmp_path / "h" / ".claude"))
+    monkeypatch.setenv("PANTHEON_CODEX_HOME", str(tmp_path / "h" / ".codex"))
+    cfg = config.load(p)
+    assert cfg.claude_home == str(tmp_path / "h" / ".claude")
+    assert cfg.codex_home == str(tmp_path / "h" / ".codex")
+
+
 @pytest.mark.parametrize("value", ["off", "OFF", " off ", "false", "no", "0"])
 def test_assistant_env_switch_turns_it_off_whatever_the_file_says(monkeypatch, value):
     """A throwaway deck (the launcher test lane, the double-restart script) must never start

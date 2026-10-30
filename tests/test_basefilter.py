@@ -244,3 +244,68 @@ def test_every_named_view_agrees_with_queue_filters_on_the_fixtures():
             disagreements.append((view.name, len(from_base), len(from_spec),
                                   sorted(from_base ^ from_spec)))
     assert not disagreements, f"basefilter and queue/filters.py disagree: {disagreements}"
+
+
+@pytest.mark.parametrize("block", [None, {}, [], 7, True, {"unexpected": []}])
+def test_missing_or_unrecognised_filter_shapes_keep_rows(block):
+    assert bf.evaluate(bf.parse_node(block), row()) is True
+
+
+@pytest.mark.parametrize("expression", ["", 'status == "unterminated', "count === 3", "count >", 'file.hasTag("chore", "garden")'])
+def test_malformed_leaf_rules_are_permissive_and_recorded(expression):
+    node = bf.parse_node(expression)
+    assert bf.evaluate(node, row()) is True
+    assert bf.collect_unknown(node) == [expression]
+
+
+@pytest.mark.parametrize("literal", ["null", "none", "empty"])
+def test_null_literals_distinguish_blank_from_zero(literal):
+    keep = bf.compile_rule(f"count == {literal}")
+    assert keep(row()) is True
+    assert keep(row(extra={"count": "  "})) is True
+    assert keep(row(extra={"count": 0})) is False
+
+
+@pytest.mark.parametrize("tags", [" #CHORE ", ("garden", "#Chore"), None, []])
+def test_tag_rules_accept_scalar_and_tuple_and_missing_tags(tags):
+    assert bf.compile_rule('file.hasTag("#chore")')(row(extra={"tags": tags})) is bool(tags)
+
+
+@pytest.mark.parametrize("direction", ["ASC", "DESC"])
+def test_sort_keeps_whitespace_and_missing_values_last(direction):
+    rows = [row(id="blank", extra={"rank": "  "}), row(id="missing"),
+            row(id="a", extra={"rank": "a"}), row(id="z", extra={"rank": "z"})]
+    ordered = sorted(rows, key=bf.sort_key_for([("rank", direction)]))
+    assert [item.id for item in ordered[:2]] == (["a", "z"] if direction == "ASC" else ["z", "a"])
+    assert {item.id for item in ordered[2:]} == {"blank", "missing"}
+
+
+def test_first_folder_uses_depth_first_order_and_keeps_empty_folder():
+    views = [{"filters": {"and": [{"or": ['file.inFolder("")', 'file.inFolder("later")']},
+                                   'file.inFolder("last")']}},
+             {"filters": 'file.inFolder("other view")'}]
+    assert bf.first_in_folder(views) == ""
+
+
+def test_numeric_zero_matches_zero_literal():
+    assert bf.compile_rule("count == 0")(row(extra={"count": 0})) is True
+    assert bf.compile_rule("count != 0")(row(extra={"count": 0})) is False
+
+
+@pytest.mark.parametrize("value, expression", [(False, "count < 1"), (False, "count <= 0"),
+                                               (True, "count > 0"), (True, "count >= 1")])
+def test_boolean_values_are_not_orderable(value, expression):
+    assert bf.compile_rule(expression)(row(extra={"count": value})) is False
+
+
+@pytest.mark.parametrize("kind", ["and", "or"])
+@pytest.mark.parametrize("value", [7, True])
+def test_scalar_combinator_children_do_not_crash(kind, value):
+    assert bf.evaluate(bf.parse_node({kind: value}), row()) is True
+
+
+def test_unknown_rule_under_not_keeps_rows_and_is_recorded():
+    expression = 'summary.contains("x")'
+    node = bf.parse_node({"not": expression})
+    assert bf.evaluate(node, row(summary="anything")) is True
+    assert bf.collect_unknown(node) == [expression]

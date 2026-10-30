@@ -24,8 +24,13 @@ switch -- `[assistant] enabled = false` or `PANTHEON_ASSISTANT=off` -- checked b
 from __future__ import annotations
 
 import argparse
+import contextlib
+import itertools
 import json
 import logging
+import os
+import re
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -193,10 +198,75 @@ def final_reply(transcript: Path, since: datetime) -> tuple[int, str]:
     return seen, "\n\n".join(t.strip() for t in texts if t.strip())
 
 
+def paste_when_idle(pane_id: str, text: str, tmux: Optional[str] = None,
+                    capture: Optional[Callable[..., str]] = None,
+                    sleep: Callable[[float], None] = time.sleep, buffer: str = PASTE_BUFFER) -> str:
+    """The one safe way to put a prompt into a Claude Code pane: only after a fresh screen read
+    shows it idle at an empty prompt (`dialogs.idle_prompt`), paste, then Enter. Returns `"sent"`,
+    `"busy"` (a dialog, a question, typed text or a turn in progress; nothing was typed) or
+    `"failed"` (tmux refused). Shared by the Assistant's Telegram port and `bin/schedule`."""
+    capture = capture or tmuxctl.capture
+    # Each call gets its own buffer (two fires of one caller never swap texts) and holds the
+    # pane's lock from the idle read through Enter (Telegram, voice and a scheduled prompt never
+    # interleave in one pane).
+    buffer = f"{buffer}-{os.getpid()}-{next(_PASTE_SERIAL)}"
+    with _pane_lock(pane_id):
+        screen = capture(pane_id, tmux=tmux)
+        # A dim suggested reply in the prompt reads like typed text without its colours, so a
+        # screen that fails the plain check gets one styled re-read.
+        # That re-read alone decides: every check runs on its own text, never the older plain
+        # read, so a turn that started in between is seen.
+        if not dialogs_mod.idle_prompt(screen):
+            styled = _styled_capture(pane_id, tmux)
+            if not dialogs_mod.idle_prompt(dialogs_mod.strip_styles(styled), styled=styled):
+                return "busy"
+        ok = tmuxctl.run("set-buffer", "-b", buffer, "--", text, tmux=tmux).returncode == 0
+        ok = ok and tmuxctl.run("paste-buffer", "-p", "-d", "-b", buffer, "-t", pane_id,
+                                tmux=tmux).returncode == 0
+        if ok:
+            sleep(0.5)    # let Claude Code take the paste before Enter
+            ok = tmuxctl.run("send-keys", "-t", pane_id, "Enter", tmux=tmux).returncode == 0
+        if ok:
+            sleep(1.0)    # the next caller's idle read should see this turn running
+    return "sent" if ok else "failed"
+
+
+_PASTE_SERIAL = itertools.count(1)
+
+
+def _styled_capture(pane_id: str, tmux: Optional[str]) -> str:
+    """The pane's screen with its colour codes (`capture-pane -e`); empty if tmux refused."""
+    cp = tmuxctl.run("capture-pane", "-e", "-p", "-t", pane_id, tmux=tmux)
+    return cp.stdout if getattr(cp, "returncode", 1) == 0 else ""
+
+
+@contextlib.contextmanager
+def _pane_lock(pane_id: str):
+    """An exclusive lock on one pane, across processes (a file in the temp folder, `flock`).
+    Where `fcntl` is missing (Windows Python) it does nothing; Pantheon runs under MSYS2."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", pane_id)
+    path = os.path.join(tempfile.gettempdir(), f"pantheon-paste-{safe}.lock")
+    with open(path, "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 class AssistantPort:
     """The Assistant's existing way in: its tmux pane. `deliver` pastes the text and presses
     Enter, only after a fresh screen read shows it idle at an empty prompt (`dialogs.idle_prompt`,
-    the same check `assistant.reconnect` uses). `check` reads the hook events and the transcript."""
+    the same check `assistant.reconnect` uses). `check` reads the hook events and the transcript.
+    `paste_buffer` is per caller (the voice endpoint names its own) so two ways in never share one
+    tmux buffer."""
+
+    paste_buffer = PASTE_BUFFER
 
     def __init__(self, cfg: config_mod.Config, tmux: Optional[str] = None,
                  capture: Optional[Callable[..., str]] = None, sleep: Callable[[float], None] = time.sleep):
@@ -210,15 +280,9 @@ class AssistantPort:
         place = assistant_mod.locate(self.cfg, tmux=self.tmux)
         if place is None or not place.running:
             return "not_running", MSG_NOT_RUNNING
-        if not dialogs_mod.idle_prompt(self.capture(place.pane_id, tmux=self.tmux)):
-            return "busy", MSG_BUSY
-        ok = tmuxctl.run("set-buffer", "-b", PASTE_BUFFER, "--", text, tmux=self.tmux).returncode == 0
-        ok = ok and tmuxctl.run("paste-buffer", "-p", "-d", "-b", PASTE_BUFFER, "-t", place.pane_id,
-                                tmux=self.tmux).returncode == 0
-        if ok:
-            self.sleep(0.5)    # let Claude Code take the paste before Enter
-            ok = tmuxctl.run("send-keys", "-t", place.pane_id, "Enter", tmux=self.tmux).returncode == 0
-        return ("sent", "") if ok else ("failed", MSG_SEND_FAILED)
+        state = paste_when_idle(place.pane_id, text, tmux=self.tmux, capture=self.capture, sleep=self.sleep,
+                                buffer=self.paste_buffer)
+        return {"sent": ("sent", ""), "busy": ("busy", MSG_BUSY)}.get(state, ("failed", MSG_SEND_FAILED))
 
     def session_id(self) -> Optional[str]:
         return assistant_mod.learn(self.cfg)

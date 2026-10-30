@@ -33,6 +33,40 @@ Not part of the section.
 # ---------------------------------------------------------------- the basic shape
 
 
+def test_tags_trailing_the_bullet_count_when_the_title_has_none():
+    """Most projects put the tags at the end of the bullet, after the detail; reading only the
+    bold title left every such thread as owner unknown."""
+    text = (
+        "## Open threads\n"
+        "- **Preview window opens invisibly** (unfixed) -- repair it. [the user] [low] [kept 2026-10-13: x]\n"
+        "- **Media refresh** -- sample in `../other/x.md`. [agent] [high] [gates: go]\n"
+        "- **Title wins [the user] [low].** Later text says [agent] [high].\n"
+    )
+    t = parse_open_threads(text)
+    assert (t[0].owner, t[0].priority, t[0].gates) == ("the user", "low", None)
+    assert t[0].title == "Preview window opens invisibly"
+    assert (t[1].owner, t[1].priority, t[1].gates) == ("agent", "high", "go")
+    assert (t[2].owner, t[2].priority) == ("the user", "low")
+
+
+def test_prose_brackets_in_the_detail_are_not_tags():
+    """A quoted legend, a markdown link or a nested bracket in the detail must not read as the
+    owner/gate tag ahead of the real trailing one."""
+    text = (
+        "## Open threads\n"
+        "- **Fix ownership filtering** The legend uses `[the user]`; this work belongs to a model. [agent]\n"
+        "- **Fix ownership filtering** See [the user](https://example.com). [agent]\n"
+        "- **Fix ownership filtering** [example [the user]] [agent]\n"
+        "- **Fix gating** The documentation shows `[gates: go]`. [agent]\n"
+        "- **Install it [gates: go -- OK to install at `C:/some/folder`] [agent] [high].** Detail.\n"
+    )
+    t = parse_open_threads(text)
+    assert [x.owner for x in t] == ["agent"] * 5
+    assert [x.gates for x in t[:4]] == [None] * 4
+    assert t[4].gates == "go -- OK to install at `C:/some/folder`"
+    assert t[4].priority == "high"
+
+
 def test_a_tagged_section_parses_to_one_thread_per_bullet():
     threads = parse_open_threads(TAGGED)
     assert len(threads) == 5

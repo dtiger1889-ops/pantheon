@@ -38,3 +38,6 @@ state/
 # pantheon/wizard.py writes this file on first run.
 /pantheon.toml
 snapshot_report.html
+
+# ---- pytest --basetemp folders from failure-path test runs ----
+tests/.failure-*-tmp/

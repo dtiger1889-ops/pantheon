@@ -18,210 +18,21 @@ Not libtmux's own `server` fixture: its `config_file` fixture writes a `~/.tmux.
 """
 from __future__ import annotations
 
-import os
-import shutil
+import re
 import subprocess
 import time
-from pathlib import Path
 
 import pytest
 
-libtmux = pytest.importorskip("libtmux")
-
-ROOT = Path(__file__).resolve().parents[1]
-LAUNCHER = ROOT / "bin" / "pantheon"
-SESSION = "pantheon-test"
-
-
-def _tmux_exe() -> str:
-    for candidate in ("/usr/bin/tmux", "C:/msys64/usr/bin/tmux.exe"):
-        if os.path.exists(candidate):
-            return candidate
-    return shutil.which("tmux") or ""
-
-
-def _tmux_reachable() -> bool:
-    exe = _tmux_exe()
-    if not exe or not os.path.exists("/usr/bin/bash"):
-        return False
-    try:
-        return subprocess.run([exe, "-V"], capture_output=True, timeout=10).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-TMUX = _tmux_exe()
+from tests.tmux_harness import (  # noqa: F401  (fixtures are used by name)
+    LAUNCHER, ROOT, SESSION, TMUX, Launcher, _tmux_exe, _tmux_reachable, launcher, started,
+    wait_until,
+)
 
 pytestmark = [
     pytest.mark.real_tmux,
     pytest.mark.skipif(not _tmux_reachable(), reason="no reachable tmux (Desktop-app session)"),
 ]
-
-
-def wait_until(predicate, message: str, timeout: float = 60.0, interval: float = 0.5):
-    deadline = time.monotonic() + timeout
-    while True:
-        value = predicate()
-        if value:
-            return value
-        if time.monotonic() > deadline:
-            raise AssertionError(f"timed out waiting: {message}")
-        time.sleep(interval)
-
-
-class Launcher:
-    """One throwaway tmux server plus the `bin/pantheon` that drives it."""
-
-    def __init__(self, tmp: Path) -> None:
-        self.tmp = tmp
-        self.tmpdir = tmp / "tmux"
-        self.tmpdir.mkdir(parents=True, exist_ok=True)
-        self.logs = tmp / "logs"
-        self.logs.mkdir(exist_ok=True)
-        self.socket = str(self.tmpdir / f"tmux-{os.geteuid()}" / "default")
-        self.state_dir = tmp / "state"
-        self.state_dir.mkdir(exist_ok=True)
-        self.env = dict(os.environ)
-        self.env.pop("TMUX", None)
-        self.env["TMUX_TMPDIR"] = str(self.tmpdir)
-        self.env["PANTHEON_SESSION"] = SESSION
-        # The throwaway deck's apps write their log and their events here, never into the live
-        # deck's state folder.
-        self.env["PANTHEON_STATE_DIR"] = str(self.state_dir)
-        # No Assistant on the throwaway deck: it is a real Claude, and one outlived its server
-        # (2026-10-05). `assistant_settings()` in pantheon/config.py honours this.
-        self.env["PANTHEON_ASSISTANT"] = "off"
-        self._runs = 0
-        # The outer server exists only to give attached clients a real terminal: a tmux client
-        # needs a tty, so each "client" is a pane on a second, unrelated server running
-        # `bin/pantheon` with no arguments -- the real attach path.
-        self.outer_socket = str(tmp / "outer.sock")
-        self._clients = 0
-
-    # -- driving the launcher -------------------------------------------------
-    def run(self, *args: str, timeout: int = 240) -> subprocess.CompletedProcess:
-        self._runs += 1
-        out = self.logs / f"run{self._runs}.log"
-        with open(out, "w", encoding="utf-8") as fh:
-            cp = subprocess.run([str(LAUNCHER), *args], env=self.env, stdin=subprocess.DEVNULL,
-                                stdout=fh, stderr=subprocess.STDOUT, timeout=timeout)
-        cp.stdout = out.read_text(encoding="utf-8", errors="replace")
-        return cp
-
-    # -- asking the throwaway server ------------------------------------------
-    def tmux(self, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run([TMUX, "-S", self.socket, *args], env=self.env,
-                              capture_output=True, text=True, timeout=30)
-
-    @property
-    def server(self):
-        """The same throwaway server as a libtmux object, for anything easier to read that way."""
-        return libtmux.Server(socket_path=self.socket)
-
-    def windows(self) -> list[tuple[int, str, str]]:
-        """[(index, name, pane_pid)] of the deck session, or [] when it is gone.
-
-        The pid, not the pane id: `respawn-window` reuses the pane, so only the process changing
-        proves the window was restarted.
-        """
-        cp = self.tmux("list-windows", "-t", SESSION, "-F",
-                       "#{window_index}|#{window_name}|#{pane_pid}")
-        if cp.returncode != 0:
-            return []
-        rows = []
-        for line in cp.stdout.splitlines():
-            index, name, pid = line.split("|")
-            rows.append((int(index), name, pid))
-        return rows
-
-    def clients(self) -> list[tuple[str, str, int]]:
-        """[(tty, session, current window index)] for every attached client."""
-        cp = self.tmux("list-clients", "-F", "#{client_tty}|#{client_session}|#{window_index}")
-        if cp.returncode != 0:
-            return []
-        out = []
-        for line in cp.stdout.splitlines():
-            tty, session, index = line.split("|")
-            out.append((tty, session, int(index)))
-        return out
-
-    def where_clients_are(self) -> dict[str, int]:
-        return {tty: index for tty, _, index in self.clients()}
-
-    def capture(self, target: str) -> str:
-        """The characters on a pane right now."""
-        cp = self.tmux("capture-pane", "-p", "-t", target)
-        return cp.stdout if cp.returncode == 0 else ""
-
-    def pane_dead(self, target: str) -> bool:
-        cp = self.tmux("display-message", "-p", "-t", target, "#{pane_dead}")
-        return cp.stdout.strip() != "0"
-
-    def has_session(self) -> bool:
-        return self.tmux("has-session", "-t", SESSION).returncode == 0
-
-    def sessions(self) -> list[str]:
-        cp = self.tmux("list-sessions", "-F", "#{session_name}")
-        return cp.stdout.split() if cp.returncode == 0 else []
-
-    # -- attached clients -----------------------------------------------------
-    def attach_client(self) -> None:
-        """Attach one more real client by running `bin/pantheon` (no arguments) in a pane."""
-        self._clients += 1
-        command = (
-            f'unset TMUX; export TMUX_TMPDIR="{self.tmpdir}" PANTHEON_SESSION="{SESSION}" '
-            f'PANTHEON_ASSISTANT=off; '
-            f'exec "{LAUNCHER}"'
-        )
-        args = ["-S", self.outer_socket]
-        if self._clients == 1:
-            args += ["new-session", "-d", "-x", "200", "-y", "50", "-s", "clients",
-                     "-n", f"c{self._clients}", command]
-        else:
-            args += ["new-window", "-d", "-t", "clients", "-n", f"c{self._clients}", command]
-        subprocess.run([TMUX, *args], env=self.env, stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-        wait_until(lambda: len(self.clients()) == self._clients,
-                   f"client {self._clients} never attached")
-
-    def kill(self) -> None:
-        # `kill-server` alone is not enough on this Windows/MSYS tmux: it tears down the pty
-        # but does not reliably reap a pane's process tree, so `pantheon.queue`/`pantheon.hud`
-        # (started via the `wrap` shell in bin/pantheon) can survive it. Collect
-        # every pane pid on both throwaway sockets before the kill, then force-kill any survivor
-        # and its children by pid so nothing from this test outlives it.
-        pane_pids: list[str] = []
-        for socket in (self.socket, self.outer_socket):
-            cp = subprocess.run([TMUX, "-S", socket, "list-panes", "-a", "-F", "#{pane_pid}"],
-                                env=self.env, capture_output=True, text=True, timeout=10)
-            if cp.returncode == 0:
-                pane_pids += [pid for pid in cp.stdout.split() if pid]
-            subprocess.run([TMUX, "-S", socket, "kill-server"], env=self.env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        for pid in pane_pids:
-            # `//T //F`, not `/T /F`: MSYS2 rewrites a single-slash `/T`/`/F` into a Windows
-            # path (`T:/`, `F:/`) before exec'ing a native binary like taskkill.exe, so this
-            # cleanup has probably never actually torn anything down. The
-            # doubled slash tells MSYS's argv translation to leave the flag alone.
-            subprocess.run(["taskkill", "//T", "//F", "//PID", pid],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-
-
-@pytest.fixture
-def launcher(tmp_path):
-    lab = Launcher(tmp_path)
-    try:
-        yield lab
-    finally:
-        lab.kill()
-
-
-@pytest.fixture
-def started(launcher):
-    """A started deck: `pantheon --no-attach`, waited until windows 0-2 exist."""
-    launcher.run("--no-attach")
-    wait_until(lambda: len(launcher.windows()) >= 3, "the three deck windows never appeared")
-    return launcher
 
 
 def test_no_attach_opens_deck_queue_and_budget(started):
@@ -236,6 +47,71 @@ def test_the_throwaway_deck_writes_into_its_own_state_folder(started):
     log or events file."""
     wait_until(lambda: any(started.state_dir.iterdir()), "nothing was written to the test state dir")
     assert (started.state_dir / "agents").exists()
+
+
+def test_the_server_it_starts_by_default_runs_without_its_log(started):
+    """tmux -v logs every drawn character on its only thread and lagged every window,
+    so a default start leaves it off."""
+    folder = started.state_dir / "health" / SESSION / "tmux-log"
+    assert not list(folder.glob("tmux-server-*.log")), "the server logged by default"
+    assert not list(ROOT.glob("tmux-server-*.log")), "a server log landed in the checkout"
+
+
+def test_the_server_it_starts_leaves_an_exit_record_when_it_ends(started):
+    """The exit record: the launcher starts the server as tmux -D under a parent
+    that appends the exit code and time to server-exits.jsonl."""
+    import json
+    records = started.state_dir / "health" / SESSION / "server-exits.jsonl"
+    pid = started.tmux("display-message", "-p", "#{pid}").stdout.strip()
+    started.tmux("kill-server")
+    wait_until(lambda: records.exists() and pid in records.read_text(), "no exit record for the server")
+    row = [json.loads(line) for line in records.read_text().splitlines() if line.strip()][-1]
+    assert str(row["msys_pid"]) == pid and row["exit_code"] == 0 and row["signal"] is None
+
+
+def _with_server_log_on(text: str) -> str:
+    """The live config's text with `[health] server_log = true`, whether or not it has a [health]
+    table or that key already (a second [health] table would not parse)."""
+    if re.search(r"(?m)^\s*server_log\s*=", text):
+        return re.sub(r"(?m)^(\s*)server_log\s*=.*$", r"\1server_log = true", text)
+    if re.search(r"(?m)^\[health\]\s*$", text):
+        return re.sub(r"(?m)^\[health\]\s*$", "[health]\nserver_log = true", text, count=1)
+    return text + "\n[health]\nserver_log = true\n"
+
+
+def test_server_log_switched_on_keeps_its_own_log_in_the_health_folder(launcher, tmp_path):
+    """The server-exit log, opt-in: with `[health] server_log = true` the launcher
+    starts the server with tmux's -v from the session's health folder. The setting goes in a copy
+    named by PANTHEON_CONFIG, so a killed run never leaves the live pantheon.toml logging."""
+    live = ROOT / "pantheon.toml"
+    copy = tmp_path / "pantheon.toml"
+    copy.write_text(_with_server_log_on(live.read_text(encoding="utf-8") if live.exists() else ""),
+                    encoding="utf-8", newline="")
+    launcher.env["PANTHEON_CONFIG"] = str(copy)
+    launcher.run("--no-attach")
+    folder = launcher.state_dir / "health" / SESSION / "tmux-log"
+    wait_until(lambda: list(folder.glob("tmux-server-*.log")), "the server wrote no log of its own")
+    assert not list(ROOT.glob("tmux-server-*.log")), "a server log landed in the checkout"
+
+
+def test_health_switched_off_starts_the_server_without_its_log(launcher):
+    """With `[health] enabled = false` no watcher
+    runs to cap tmux's -v log, so the launcher must not turn that log on."""
+    toml_path = ROOT / "pantheon.toml"
+    original = toml_path.read_bytes() if toml_path.exists() else None   # byte-exact, as above
+    try:
+        text = (original.decode("utf-8") if original else "") + "\n[health]\nenabled = false\n"
+        toml_path.write_text(text, encoding="utf-8", newline="")
+        launcher.run("--no-attach")
+        wait_until(lambda: len(launcher.windows()) >= 3, "the three deck windows never appeared")
+        folder = launcher.state_dir / "health" / SESSION / "tmux-log"
+        assert not list(folder.glob("tmux-server-*.log")), "the server logged with the watcher off"
+        assert not list(ROOT.glob("tmux-server-*.log")), "a server log landed in the checkout"
+    finally:
+        if original is not None:
+            toml_path.write_bytes(original)
+        else:
+            toml_path.unlink(missing_ok=True)
 
 
 def test_attaching_lands_on_the_deck_window(started):

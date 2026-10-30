@@ -292,8 +292,41 @@ def test_port_never_types_into_a_busy_assistant(tmp_path, monkeypatch):
     monkeypatch.setattr(tg.tmuxctl, "run", lambda *a, **k: calls.append(a))
     port = tg.AssistantPort(cfg, capture=lambda target, tmux=None: "⠋ Thinking…\n", sleep=lambda s: None)
     assert port.deliver("hi")[0] == "busy"
-    assert calls == []
+    assert all(a[0] == "capture-pane" for a in calls)      # at most a styled re-read, never typing
 
 
 def test_port_says_not_running_when_there_is_no_assistant(tmp_path):
     assert tg.AssistantPort(_cfg(tmp_path)).deliver("hi") == ("not_running", tg.MSG_NOT_RUNNING)
+
+
+class _Ran:
+    returncode = 0
+
+
+def test_each_paste_gets_its_own_buffer(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tg.dialogs_mod, "idle_prompt", lambda screen: True)
+    monkeypatch.setattr(tg.tmuxctl, "run", lambda *a, **k: calls.append(a) or _Ran())
+    for text in ("one", "two"):
+        assert tg.paste_when_idle("%7", text, capture=lambda p, tmux=None: "", sleep=lambda s: None) == "sent"
+    buffers = [a[2] for a in calls if a[0] == "set-buffer"]
+    assert len(set(buffers)) == 2 and all(b.startswith(tg.PASTE_BUFFER + "-") for b in buffers)
+
+
+def test_a_second_caller_waits_for_the_pane_until_the_first_has_pressed_enter(monkeypatch):
+    import threading
+    monkeypatch.setattr(tg.dialogs_mod, "idle_prompt", lambda screen: True)
+    monkeypatch.setattr(tg.tmuxctl, "run", lambda *a, **k: _Ran())
+    looked = threading.Event()
+
+    def capture(pane, tmux=None):
+        looked.set()
+        return ""
+
+    with tg._pane_lock("%8"):
+        other = threading.Thread(target=tg.paste_when_idle, args=("%8", "hi"),
+                                 kwargs={"capture": capture, "sleep": lambda s: None})
+        other.start()
+        assert not looked.wait(0.3)      # blocked before its idle read
+    other.join(5)
+    assert looked.is_set() and not other.is_alive()

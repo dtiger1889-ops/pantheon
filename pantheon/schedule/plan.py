@@ -10,6 +10,7 @@ fresh `state/hud.json`, no percent, or a window that resets before the start all
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -53,6 +54,14 @@ def read_hud(cfg) -> Optional[dict]:
         return None
 
 
+def _reset_ts(value: Any) -> Optional[datetime]:
+    """A reset time from the usage file, or `None` when it is not ISO text with a timezone: a
+    number or a naive timestamp cannot be placed against the local clock, so it is treated as
+    missing rather than guessed (and never compared with an aware time, which raises)."""
+    when = parse_ts(value) if isinstance(value, str) else None
+    return when if when is not None and when.tzinfo is not None else None
+
+
 def _clock(when: datetime, like: datetime) -> str:
     """`when` on the same clock as `like` (the planned time is local), as `HH:MM`, with the day
     in front when it is not the same day (`Sat 17:11`, the weekly window)."""
@@ -83,7 +92,7 @@ def warn_for(planned: datetime, cfg, provider: str = "claude", now: Optional[dat
     sentences: list[str] = []
     for window, label in _WINDOWS:
         pct = picture.get(f"{window}_pct")
-        resets = parse_ts(picture.get(f"{window}_resets_at"))
+        resets = _reset_ts(picture.get(f"{window}_resets_at"))
         threshold = thresholds.get(window)
         if pct is None or resets is None or threshold is None:
             continue
@@ -91,10 +100,57 @@ def warn_for(planned: datetime, cfg, provider: str = "claude", now: Optional[dat
             pct = float(pct)
         except (TypeError, ValueError):
             continue
-        if pct < float(threshold) or resets <= planned:
+        if not math.isfinite(pct) or pct < float(threshold) or resets <= planned:
             continue
         sentences.append(
             f"{at} lands inside the {label} window, already {pct:.0f}% used "
             f"(resets {_clock(resets, planned)}); it may wind down fast."
         )
     return " ".join(sentences) or None
+
+
+# ------------------------------------------------------------------------------ "at the reset"
+
+RESET_MARGIN_MINUTES = 2          # fire a couple of minutes AFTER the reset
+RESET_WORDS = {"reset": ("five_hour", "five-hour"), "weekly-reset": ("seven_day", "weekly")}
+
+
+def is_reset_word(text: Optional[str]) -> bool:
+    return (text or "").strip().lower() in RESET_WORDS
+
+
+def _no_reset(why: str):
+    raise ValueError(f"Cannot work out the reset time: {why}. Nothing was scheduled; "
+                     f"give a clock time instead, e.g. --at 06:00.")
+
+
+def resolve_reset(text: str, cfg, provider: str = "claude", now: Optional[datetime] = None,
+                  hud: Any = "read") -> datetime:
+    """`--at reset` / `--at weekly-reset` -> the next usage-window reset in `state/hud.json`
+    plus `RESET_MARGIN_MINUTES`, on the local clock. Raises `ValueError` with a sentence the user
+    can act on when the file is missing, older than `FRESH_SECONDS`, lacks the reset, or its reset
+    has already passed (the number belongs to a window that has since moved on); it never
+    guesses a time."""
+    window, label = RESET_WORDS[text.strip().lower()]
+    now = now or datetime.now().astimezone()
+    if hud == "read":
+        hud = read_hud(cfg)
+    if not isinstance(hud, dict):
+        _no_reset(f"there is no usage file ({cfg.hud_file}); the deck writes it while it is open")
+    picture = hud.get(provider)
+    if not isinstance(picture, dict):
+        _no_reset(f"the usage file has nothing for {provider}")
+    fetched_at = picture.get("fetched_at") or hud.get("fetched_at")
+    if hud_is_stale(fetched_at, now=now, max_age_seconds=FRESH_SECONDS):
+        _no_reset("the usage file is older than 10 minutes, so its reset time may be out of date; "
+                  "open the deck and try again")
+    resets = _reset_ts(picture.get(f"{window}_resets_at"))
+    if resets is None:
+        _no_reset(f"the usage file has no {label} reset time for {provider}")
+    if resets <= now:
+        _no_reset(f"the {label} reset in the usage file ({resets.astimezone().strftime('%H:%M')}) "
+                  f"has already passed and the file has not caught up")
+    planned = resets.astimezone() + timedelta(minutes=RESET_MARGIN_MINUTES)
+    if planned.second or planned.microsecond:       # Task Scheduler works in whole minutes; never early
+        planned = planned.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    return planned

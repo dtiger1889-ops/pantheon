@@ -178,6 +178,14 @@ class Health:
     handle_exe: str = ""
     procdump_exe: str = ""
     command_log: bool = True
+    # tmux's own server log (`pantheon/health/server_log.py`), read by the exit capture; it rolls
+    # over to `.prev` past `server_log_mb`. Off by
+    # default: tmux -v logs every drawn character on its only thread and lagged every window.
+    server_log: bool = False
+    server_log_mb: int = 64
+    # tmux's own log only while the server is not answering, off again once it answers
+    # (`server_log.freeze_toggle`).
+    freeze_log: bool = True
     alerts: list[str] = field(default_factory=lambda: ["deck", "toast", "ntfy"])
     # A pane with no session in it (a bare shell with nothing running under it, or a dead pane)
     # whose screen has not changed for this many minutes is closed; 0 = never.
@@ -187,7 +195,7 @@ class Health:
     def from_dict(cls, data: dict[str, Any]) -> "Health":
         known = set(cls.__dataclass_fields__)
         kwargs = {k: v for k, v in (data or {}).items() if k in known}
-        for key in ("enabled", "auto_restart", "planned_restart", "command_log"):
+        for key in ("enabled", "auto_restart", "planned_restart", "command_log", "server_log", "freeze_log"):
             if key in kwargs:
                 value = kwargs[key]
                 kwargs[key] = not (
@@ -373,6 +381,24 @@ class Assistant:
         return cls(**kwargs)
 
 
+@dataclass(frozen=True)
+class Deck:
+    """`[deck]` in pantheon.toml: options for the deck window itself. `tips` turns the rotating
+    tip line above the key strip on or off (default on)."""
+
+    tips: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Deck":
+        known = set(cls.__dataclass_fields__)
+        kwargs = {k: v for k, v in (data or {}).items() if k in known}
+        if "tips" in kwargs:
+            value = kwargs["tips"]
+            kwargs["tips"] = not (
+                value is False or str(value).strip().lower() in ("false", "off", "no", "0"))
+        return cls(**kwargs)
+
+
 # Where throwaway trials run (a test tmux server, a probe folder): their transcripts are real
 # Claude conversations, but they are not the user's projects.
 DEFAULT_HIDE_FOLDERS = ("C:/msys64/tmp", "/tmp", "%LOCALAPPDATA%/Temp", "C:/Windows/Temp")
@@ -474,6 +500,9 @@ class Config:
                                                               # assistant_settings
     sessions: dict[str, Any] = field(default_factory=dict)  # `[sessions]`; read only through
                                                              # sessions_settings()
+    voice: dict[str, Any] = field(default_factory=dict)  # `[voice]`; read only through
+                                                          # voice_endpoint.Settings
+    deck: dict[str, Any] = field(default_factory=dict)  # `[deck]`; read only through deck_settings()
     health: dict[str, Any] = field(default_factory=dict)  # `[health]`; read only through
                                                            # health_settings()
     state_dir: str = str(STATE_DIR)
@@ -608,6 +637,10 @@ class Config:
         """`self.sessions` (the raw `[sessions]` TOML dict) as a typed `Sessions`."""
         return Sessions.from_dict(self.sessions)
 
+    def deck_settings(self) -> Deck:
+        """`self.deck` (the raw `[deck]` TOML dict) as a typed `Deck`."""
+        return Deck.from_dict(self.deck)
+
     def node_env(self) -> dict[str, str]:
         """Environment for anything that runs npx/ccusage (node dir first on PATH)."""
         env = dict(os.environ)
@@ -621,8 +654,11 @@ def load(path: str | os.PathLike | None = None) -> Config:
     `PANTHEON_STATE_DIR` in the environment wins over the file's `state_dir`: the launcher test
     lane (tests/test_launcher_tmux.py) starts a whole throwaway deck, and without this its apps
     would write their log and their events into the live deck's `state/` folder.
+    `PANTHEON_CONFIG` names another file to read when no path is given, so that lane can change a
+    setting without editing the live pantheon.toml.
     """
-    toml_path = Path(path) if path else DEFAULT_TOML
+    env_path = os.environ.get("PANTHEON_CONFIG", "").strip()
+    toml_path = Path(path) if path else Path(env_path) if env_path else DEFAULT_TOML
     if not toml_path.exists():
         return _with_env_overrides(Config())
     with open(toml_path, "rb") as fh:
@@ -651,6 +687,14 @@ def _with_env_overrides(cfg: Config) -> Config:
     session = os.environ.get("PANTHEON_SESSION", "").strip()
     if session:
         cfg = dataclasses.replace(cfg, tmux_session=session)
+    # `PANTHEON_CLAUDE_HOME` / `PANTHEON_CODEX_HOME` beat the file's provider folders: the walk
+    # suite's empty $HOME did not reach these absolute paths, so its throwaway deck still read the
+    # real login, settings and Codex logs.
+    for env_name, field_name in (("PANTHEON_CLAUDE_HOME", "claude_home"),
+                                 ("PANTHEON_CODEX_HOME", "codex_home")):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            cfg = dataclasses.replace(cfg, **{field_name: value})
     return cfg
 
 

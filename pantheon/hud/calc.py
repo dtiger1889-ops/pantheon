@@ -17,6 +17,17 @@ from ..models import format_clock, parse_ts
 # How far back a burn-rate reading looks. Spec the last 30 minutes, scaled to per hour.
 BURN_WINDOW_SECONDS = 30 * 60
 
+# A fall this small is reading noise, not a window reset: the percent is whole-number and the
+# sessions' statuslines report it at slightly different moments, so the series wobbles
+# (46, 45, 46, 48, 47) while it climbs.
+RESET_DROP_PCT = 2.0
+
+# Two readings whose window reset times differ by more than this belong to different windows.
+# A new 5-hour window resets about 5 hours after the old one; the same window's reset time only
+# jitters by seconds to minutes between sources. This catches a reset the percent cannot show:
+# 2% -> 0% falls within the wobble.
+RESET_SHIFT_SECONDS = 60 * 60
+
 # Attention thresholds. Separate from the 70/90 colour bands in theme.py:
 # colour warns earlier, the written line only appears when the user would actually act.
 WEEKLY_ATTENTION_PCT = 85.0
@@ -42,21 +53,11 @@ def _as_epoch(ts) -> Optional[float]:
     return parsed.timestamp() if parsed else None
 
 
-def burn_pct_per_hour(
-    samples: Sequence[tuple], window_seconds: int = BURN_WINDOW_SECONDS,
-    now: Optional[float] = None,
-) -> Optional[float]:
-    """Percent of budget spent per hour, measured over the last `window_seconds` of samples.
-
-    `samples` is a list of (timestamp, percent) pairs; timestamps may be ISO strings or epoch
-    seconds and need not be sorted. Returns None when there is not enough to say -- fewer than
-    two usable readings, no time between them, or only readings from before a window reset.
-    A reset (the percent dropping) ends the measurable run, so only the rising tail is used.
-    `now` (epoch seconds) makes a newest reading older than the window count as no reading at
-    all: with no live session the last samples are hours old, and `burn 9%/h` from the morning
-    sat beside `5h ?` as if it were current.
-    """
-    clean: list[tuple[float, float]] = []
+def clean_samples(samples) -> list[tuple[float, float, Optional[float]]]:
+    """Usable readings as (epoch, percent, reset epoch or None), sorted by time. A sample is
+    (timestamp, percent) or (timestamp, percent, window reset time); anything unreadable is
+    dropped."""
+    clean: list[tuple[float, float, Optional[float]]] = []
     for item in samples or ():
         if not item or len(item) < 2:
             continue
@@ -64,32 +65,65 @@ def burn_pct_per_hour(
         if t is None or pct is None:
             continue
         try:
-            clean.append((t, float(pct)))
+            pct = float(pct)
         except (TypeError, ValueError):
             continue
+        reset = _as_epoch(item[2]) if len(item) > 2 else None
+        clean.append((t, pct, reset))
+    clean.sort(key=lambda p: p[0])
+    return clean
+
+
+def rising_tail(clean: Sequence[tuple], window_seconds: int = BURN_WINDOW_SECONDS) -> list:
+    """The readings since the last window reset, inside the window, from `clean_samples`.
+
+    Walks back from the newest reading and stops at a reset: the percent falling by more than
+    the wobble, or the window's reset time moving. `burn_pct_per_hour` and planning's range
+    both measure over exactly this list, so the burn and its range never disagree."""
+    if not clean:
+        return []
+    tail = [clean[-1]]
+    for item in reversed(clean[:-1]):
+        first = tail[0]
+        if item[1] > first[1] + RESET_DROP_PCT:
+            break
+        if (item[2] is not None and first[2] is not None
+                and abs(item[2] - first[2]) > RESET_SHIFT_SECONDS):
+            break
+        tail.insert(0, item)
+    newest = tail[-1][0]
+    return [p for p in tail if newest - p[0] <= window_seconds]
+
+
+def burn_pct_per_hour(
+    samples: Sequence[tuple], window_seconds: int = BURN_WINDOW_SECONDS,
+    now: Optional[float] = None,
+) -> Optional[float]:
+    """Percent of budget spent per hour, measured over the last `window_seconds` of samples.
+
+    `samples` is a list of (timestamp, percent) pairs, optionally with the window's reset time
+    as a third item; timestamps may be ISO strings or epoch seconds and need not be sorted.
+    Returns None when there is not enough to say -- fewer than two usable readings, no time
+    between them, or only readings from before a window reset. A reset ends the measurable run,
+    so only the rising tail is used (`rising_tail`). A tail that ends a point or two below where
+    it started is wobble on a flat line: 0%/h, not unknown.
+    `now` (epoch seconds) makes a newest reading older than the window count as no reading at
+    all: with no live session the last samples are hours old, and `burn 9%/h` from the morning
+    sat beside `5h ?` as if it were current.
+    """
+    clean = clean_samples(samples)
     if len(clean) < 2:
         return None
-    clean.sort(key=lambda p: p[0])
-
-    # Walk back from the newest reading; stop where the percent last fell (a window reset).
-    tail = [clean[-1]]
-    for t, pct in reversed(clean[:-1]):
-        if pct > tail[0][1]:
-            break
-        tail.insert(0, (t, pct))
-    newest = tail[-1][0]
-    if now is not None and now - newest > window_seconds:
+    if now is not None and now - clean[-1][0] > window_seconds:
         return None
-    tail = [(t, p) for t, p in tail if newest - t <= window_seconds]
+    tail = rising_tail(clean, window_seconds)
     if len(tail) < 2:
         return None
 
     elapsed = tail[-1][0] - tail[0][0]
     if elapsed <= 0:
         return None
-    delta = tail[-1][1] - tail[0][1]
-    if delta < 0:
-        return None
+    delta = max(0.0, tail[-1][1] - tail[0][1])
     return delta / (elapsed / 3600.0)
 
 
