@@ -300,6 +300,7 @@ if [ "$1" = "--restart" ]; then
     if tmux list-windows -t "$SESSION" -F "#{window_name}" 2>/dev/null | grep -qx NOTES; then
       tmux respawn-window -k -t "$SESSION:NOTES" -c "$ROOT" "$(wrap pantheon.notes)"
     fi
+    RESTARTED=1   # VOICE is respawned below, with the rest of the start
     tmux select-window -t "$SESSION:=DECK"
     echo "pantheon: deck, queue and budget restarted; agent windows kept (--restart --all restarts everything)"
   fi
@@ -439,6 +440,21 @@ if [ -z "$WATCH_PID" ] || ! kill -0 "$WATCH_PID" 2>/dev/null; then
   WATCH_ENV="PANTHEON_SESSION=$(printf %q "$SESSION")"
   [ -n "$PANTHEON_STATE_DIR" ] && WATCH_ENV="$WATCH_ENV PANTHEON_STATE_DIR=$(printf %q "$PANTHEON_STATE_DIR")"
   tmux run-shell -b -t "$SESSION" "cd $(printf %q "$ROOT") && $WATCH_ENV setsid $(printf %q "$PY") -m pantheon.health.watch </dev/null >>$(printf %q "$HEALTH_DIR/watch.out") 2>&1 &"
+fi
+# The voice endpoint (docs/voice-endpoint.md) in its own VOICE window, so the pucks keep working
+# after a restart or a reboot: opened whenever it is missing and pantheon/voice_endpoint.py
+# should_autostart says so (`[voice] enabled` and the Assistant on -- the test lane's decks run
+# with the Assistant off, so they never take the port). `--restart` respawns it for new code.
+# Not `wrap`: under MSYS2 `respawn-window -k` ends only the pane's bash, and a python child kept
+# the port, so the new endpoint could not listen. The trap ends the child with the bash.
+VOICE_CMD="bash -c '\"$PY\" -m pantheon.voice_endpoint & C=\$!; trap \"kill \$C 2>/dev/null; exit\" HUP TERM; wait \$C; echo; echo \"pantheon.voice_endpoint exited - details in state/pantheon.log; press Enter to close\"; $PANE_HOLD'"
+VOICE_ON="$("$PY" -c 'import pantheon.config as c, pantheon.voice_endpoint as v; print(v.should_autostart(c.load()))' 2>/dev/null </dev/null)"
+if [ "$VOICE_ON" = True ]; then
+  if ! tmux list-windows -t "$SESSION" -F "#{window_name}" 2>/dev/null | grep -qx VOICE; then
+    tmux new-window -d -t "$SESSION:" -n VOICE -c "$ROOT" "$VOICE_CMD"
+  elif [ -n "$RESTARTED" ]; then
+    tmux respawn-window -k -t "$SESSION:=VOICE" -c "$ROOT" "$VOICE_CMD"
+  fi
 fi
 # Windows the deck opens (o, dispatch) get bash, not the server's default shell (pwsh on this box).
 tmux set-option -t "$SESSION" default-shell /usr/bin/bash

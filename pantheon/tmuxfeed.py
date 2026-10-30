@@ -43,7 +43,7 @@ INTERVAL_SECONDS = 2.0
 FRESH_SECONDS = 8.0           # older than this and readers go back to asking tmux themselves
 CAPTURE_SECONDS = 4.0         # how often each pane's screen is re-read
 # The deck's own windows: nothing there is an agent to scan.
-SKIP_WINDOWS = frozenset({"DECK", "QUEUE", "BUDGET", "NOTES", "PIT", "gov", "PLAN"})
+SKIP_WINDOWS = frozenset({"DECK", "QUEUE", "BUDGET", "NOTES", "PIT", "gov", "PLAN", "VOICE"})
 
 
 def feed_path(cfg: config_mod.Config) -> Path:

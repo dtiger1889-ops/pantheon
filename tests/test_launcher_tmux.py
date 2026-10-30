@@ -94,6 +94,17 @@ def test_server_log_switched_on_keeps_its_own_log_in_the_health_folder(launcher,
     assert not list(ROOT.glob("tmux-server-*.log")), "a server log landed in the checkout"
 
 
+def test_a_test_deck_never_opens_voice_even_with_voice_switched_on(launcher, tmp_path):
+    """bin/pantheon opens VOICE only with the Assistant on too; the lane's decks run with
+    PANTHEON_ASSISTANT=off, so a test run can never take the live endpoint's port."""
+    copy = tmp_path / "pantheon.toml"
+    copy.write_text('[voice]\nenabled = true\nbind = "127.0.0.1"\nport = 0\n', encoding="utf-8")
+    launcher.env["PANTHEON_CONFIG"] = str(copy)
+    launcher.run("--no-attach")
+    launcher.run("--restart")
+    assert "VOICE" not in {name for _, name, _ in launcher.windows()}
+
+
 def test_health_switched_off_starts_the_server_without_its_log(launcher):
     """With `[health] enabled = false` no watcher
     runs to cap tmux's -v log, so the launcher must not turn that log on."""

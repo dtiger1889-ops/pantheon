@@ -686,6 +686,17 @@ def make_server(voice: Voice, settings: Settings, token: str) -> VoiceServer:
 # --------------------------------------------------------------------------- main
 
 
+def should_autostart(cfg) -> bool:
+    """Whether `bin/pantheon` opens the VOICE window: `[voice] enabled` and the Assistant on (with
+    the Assistant off, `main` only prints and exits, so the window would open just to end). A
+    `[voice]` table that does not parse still opens it, so its error shows in that window."""
+    try:
+        enabled = Settings.from_config(cfg).enabled
+    except ValueError:
+        return True
+    return enabled and cfg.assistant_settings().enabled
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m pantheon.voice_endpoint",
                                      description="Voice (Home Assistant) into the Pantheon Assistant")

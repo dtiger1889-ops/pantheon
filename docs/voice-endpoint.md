@@ -51,13 +51,14 @@ setting its wake word are Home Assistant's own setup and are not covered here.
    cd <pantheon folder> && .venv/bin/python -m pantheon.voice_endpoint --check
    ```
 
-5. **Start it** as its own window in the deck's tmux:
+5. **Start it**: `pantheon` does this itself. Every start, `--restart`, `--restart --all` and the
+   start after a reboot opens a VOICE window when it is missing, as long as `[voice] enabled = true`
+   and the Assistant is on; `--restart` also restarts it to pick up new code. By hand, if ever
+   needed:
 
    ```
-   tmux new-window -d -n VOICE 'cd <pantheon folder> && .venv/bin/python -m pantheon.voice_endpoint'
+   tmux new-window -d -t pantheon -n VOICE 'cd <pantheon folder> && .venv/bin/python -m pantheon.voice_endpoint'
    ```
-
-   `pantheon` does not start it by itself yet.
 
 ## Home Assistant side (in the Home Assistant web page)
 
@@ -95,7 +96,9 @@ from HACS and give it the same address as its "Base Url" and the same token as i
   Assistant Cloud's voice (`pc_voice` / `ha_voice`): `"pc"` plays it on this PC's speakers, a
   `media_player.x` entity on that Home Assistant speaker. `bin/voice_say.ps1` does the
   playing and logs outcomes, never words, to `%TEMP%\pantheon_voice_say.log`. If it can't start,
-  the puck says the answer itself.
+  the puck says the answer itself. On this PC it unmutes the speakers and sets them to 50% while
+  the answer plays, then puts mute and volume back the way they were
+  (`-SystemVolume` changes the 50, 0 leaves the speakers alone).
 - The answer is read out with formatting, code and web links taken out. A long answer is cut at a
   sentence, followed by "The rest is in the Claude app."
 - It types into the Assistant only when the Assistant is idle with nothing typed and no question

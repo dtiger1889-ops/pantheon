@@ -123,6 +123,19 @@ def test_the_example_toml_ships_voice_off():
     assert example.enabled is False and example.allow == ve.DEFAULT_ALLOW and example.token_file == ""
 
 
+def test_the_launcher_opens_voice_only_with_voice_and_the_assistant_on(monkeypatch):
+    monkeypatch.delenv("PANTHEON_ASSISTANT", raising=False)
+    assert ve.should_autostart(config_mod.Config()) is False
+    assert ve.should_autostart(config_mod.Config(voice={"enabled": True})) is True
+    monkeypatch.setenv("PANTHEON_ASSISTANT", "off")   # what the launcher test lane's decks run with
+    assert ve.should_autostart(config_mod.Config(voice={"enabled": True})) is False
+
+
+def test_a_voice_table_that_does_not_parse_still_opens_the_window_to_show_why(monkeypatch):
+    monkeypatch.delenv("PANTHEON_ASSISTANT", raising=False)
+    assert ve.should_autostart(config_mod.Config(voice={"enabled": True, "port": 70000})) is True
+
+
 def test_main_does_not_listen_when_disabled(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(config_mod, "load", lambda: config_mod.Config(state_dir=str(tmp_path)))
     monkeypatch.setattr(ve, "make_server", lambda *a, **k: pytest.fail("must not start a server"))

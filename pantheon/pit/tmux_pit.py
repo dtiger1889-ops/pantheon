@@ -23,7 +23,7 @@ PIT_WINDOW = "PIT"
 # Never joined into the pit -- the deck's own fixed windows (`bin/pantheon` names them exactly
 # this, case-sensitive; the usage-planning page included), and the pinned Assistant, which stays
 # in its own window.
-RESERVED_WINDOWS = {"DECK", "QUEUE", "BUDGET", "NOTES", PIT_WINDOW, "ASSISTANT", "PLAN"}
+RESERVED_WINDOWS = {"DECK", "QUEUE", "BUDGET", "NOTES", PIT_WINDOW, "ASSISTANT", "PLAN", "VOICE"}
 
 
 def _state_file(cfg: config_mod.Config) -> Path:
