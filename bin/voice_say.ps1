@@ -115,8 +115,10 @@ try { [void]$lock.WaitOne(5000) } catch [System.Threading.AbandonedMutexExceptio
 try {
 $old = Get-OwnPlayer
 if ($old -and $NoPreempt) { Note 'skipped a status line, an answer is playing'; Stage 'skip'; exit 0 }
+$stopped = $false
 if ($old) {
   Stop-Process -Id $old.Id -Force -ErrorAction SilentlyContinue
+  $stopped = $true
   # A stopped player never reaches its own cleanup, so its recording goes here, once Windows has
   # released the file (it can stay locked for a moment after the process ends).
   [void]$old.WaitForExit(3000)
@@ -154,22 +156,36 @@ interface IAudioEndpointVolume {
   int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
 }
 [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDevice { int Activate(ref Guid iid, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); }
+interface IMMDevice {
+  int Activate(ref Guid iid, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o);
+  int OpenPropertyStore(int access, out IntPtr store);
+  int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
+}
 [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDeviceEnumerator { int EnumAudioEndpoints(int flow, int mask, out IntPtr devs); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev); }
+interface IMMDeviceEnumerator {
+  int EnumAudioEndpoints(int flow, int mask, out IntPtr devs); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev);
+  int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IMMDevice dev);
+}
 [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorCo { }
+// A device id names one output, so the speakers changed are the ones put back even if the default
+// output changes meanwhile (a headset plugged in); no id = the default output.
 public static class PantheonSpeakers {
-  static IAudioEndpointVolume Ep() {
-    var en = (IMMDeviceEnumerator)(new MMDeviceEnumeratorCo());
-    IMMDevice dev; Marshal.ThrowExceptionForHR(en.GetDefaultAudioEndpoint(0, 1, out dev));   // render, multimedia
+  static IMMDevice Dev(string id) {
+    var en = (IMMDeviceEnumerator)(new MMDeviceEnumeratorCo()); IMMDevice dev;
+    if (string.IsNullOrEmpty(id)) Marshal.ThrowExceptionForHR(en.GetDefaultAudioEndpoint(0, 1, out dev));   // render, multimedia
+    else Marshal.ThrowExceptionForHR(en.GetDevice(id, out dev));
+    return dev;
+  }
+  static IAudioEndpointVolume Ep(string id) {
     Guid iid = typeof(IAudioEndpointVolume).GUID; object o;
-    Marshal.ThrowExceptionForHR(dev.Activate(ref iid, 23, IntPtr.Zero, out o));
+    Marshal.ThrowExceptionForHR(Dev(id).Activate(ref iid, 23, IntPtr.Zero, out o));
     return (IAudioEndpointVolume)o;
   }
-  public static float GetLevel() { float v; Marshal.ThrowExceptionForHR(Ep().GetMasterVolumeLevelScalar(out v)); return v; }
-  public static bool GetMuted() { bool m; Marshal.ThrowExceptionForHR(Ep().GetMute(out m)); return m; }
-  public static void Set(float level, bool muted) {
-    var ep = Ep(); Guid ctx = Guid.Empty;
+  public static string DefaultId() { string s; Marshal.ThrowExceptionForHR(Dev(null).GetId(out s)); return s; }
+  public static float GetLevel(string id = null) { float v; Marshal.ThrowExceptionForHR(Ep(id).GetMasterVolumeLevelScalar(out v)); return v; }
+  public static bool GetMuted(string id = null) { bool m; Marshal.ThrowExceptionForHR(Ep(id).GetMute(out m)); return m; }
+  public static void Set(string id, float level, bool muted) {
+    var ep = Ep(id); Guid ctx = Guid.Empty;
     Marshal.ThrowExceptionForHR(ep.SetMasterVolumeLevelScalar(level, ref ctx));
     Marshal.ThrowExceptionForHR(ep.SetMute(muted, ref ctx));
   }
@@ -190,26 +206,40 @@ function Get-LiveHolders($saved) {
   })
 }
 function Use-Speakers([bool]$start) {
-  try { [void]$speakerLock.WaitOne(5000) } catch [System.Threading.AbandonedMutexException] { }
+  $owned = $false
+  try { $owned = $speakerLock.WaitOne(5000) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
+  # Without the lock another player may be mid-write: change nothing rather than lose its state.
+  if (-not $owned) { Note 'speakers not changed: another player held the lock'; return }
   try {
     $saved = $null
     try { $saved = Get-Content -LiteralPath $speakerFile -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
-    $others = if ($saved) { @(Get-LiveHolders $saved | Where-Object { $_ -ne $me }) } else { @() }
+    # @() around the whole `if`: assigned bare, one live holder would come back a string, and
+    # `$others + $me` would glue two holders into one.
+    $others = @(if ($saved) { Get-LiveHolders $saved | Where-Object { $_ -ne $me } })
     if ($start) {
-      # A file nobody alive holds for over 30 minutes is left from a crash, and the speakers may have
-      # been changed by hand since: start again from what they are now.
-      if ($saved -and -not $others -and (Get-Item -LiteralPath $speakerFile).LastWriteTime -lt (Get-Date).AddMinutes(-30)) { $saved = $null }
-      if (-not $saved) { $saved = [pscustomobject]@{ level = [PantheonSpeakers]::GetLevel(); muted = [PantheonSpeakers]::GetMuted() } }
-      [pscustomobject]@{ level = $saved.level; muted = $saved.muted; holders = @($others + $me) } |
+      # A file nobody alive holds is left by a player that never put the speakers back. Its saved state
+      # is still the one to return to only while the speakers show what that player set (unmuted at
+      # this level); changed by hand since, start again from what they are now.
+      if ($saved -and -not $others) {
+        $dev = [string]$saved.device
+        $untouched = $dev -and $dev -eq [PantheonSpeakers]::DefaultId() -and -not [PantheonSpeakers]::GetMuted($dev) -and
+          [math]::Abs([PantheonSpeakers]::GetLevel($dev) - $SystemVolume / 100.0) -lt 0.01
+        if (-not $untouched) { $saved = $null }
+      }
+      if (-not $saved) {
+        $dev = [PantheonSpeakers]::DefaultId()
+        $saved = [pscustomobject]@{ device = $dev; level = [PantheonSpeakers]::GetLevel($dev); muted = [PantheonSpeakers]::GetMuted($dev) }
+      }
+      [pscustomobject]@{ device = $saved.device; level = $saved.level; muted = $saved.muted; holders = @($others + $me) } |
         ConvertTo-Json -Compress | Out-File -FilePath $speakerFile -Encoding ascii -Force
-      [PantheonSpeakers]::Set($SystemVolume / 100.0, $false)
+      [PantheonSpeakers]::Set([string]$saved.device, $SystemVolume / 100.0, $false)
       Note ("speakers at {0}% unmuted (were {1:N0}%{2})" -f $SystemVolume, ($saved.level * 100), $(if ($saved.muted) { ', muted' } else { '' }))
     } elseif ($saved) {
       if ($others) {
-        [pscustomobject]@{ level = $saved.level; muted = $saved.muted; holders = $others } |
+        [pscustomobject]@{ device = $saved.device; level = $saved.level; muted = $saved.muted; holders = $others } |
           ConvertTo-Json -Compress | Out-File -FilePath $speakerFile -Encoding ascii -Force
       } else {
-        [PantheonSpeakers]::Set([float]$saved.level, [bool]$saved.muted)
+        [PantheonSpeakers]::Set([string]$saved.device, [float]$saved.level, [bool]$saved.muted)
         Remove-Item -LiteralPath $speakerFile -Force -ErrorAction SilentlyContinue
         Note 'speakers put back'
       }
@@ -220,6 +250,9 @@ function Use-Speakers([bool]$start) {
     try { $speakerLock.ReleaseMutex() } catch { }
   }
 }
+# The answer this one stopped never puts the speakers back itself: do it now, before anything here can
+# fail, so a failed newer answer cannot leave them up. They go up again when this one plays.
+if ($stopped) { Use-Speakers $false }
 $loud = $false
 
 $audio = Join-Path $env:TEMP "pantheon_voice_$PID.mp3"

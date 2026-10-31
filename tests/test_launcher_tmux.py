@@ -105,6 +105,18 @@ def test_a_test_deck_never_opens_voice_even_with_voice_switched_on(launcher, tmp
     assert "VOICE" not in {name for _, name, _ in launcher.windows()}
 
 
+def test_two_voice_windows_from_racing_launches_end_as_one(launcher):
+    """Two launches at once can each open VOICE; the next launch keeps the oldest and closes the rest."""
+    launcher.run("--no-attach")
+    for _ in range(2):
+        launcher.tmux("new-window", "-d", "-t", f"{SESSION}:", "-n", "VOICE", "sleep 600")
+    first = launcher.tmux("list-windows", "-t", SESSION, "-F", "#{window_id} #{window_name}").stdout
+    oldest = min((w for w in first.split("\n") if w.endswith(" VOICE")), key=lambda w: int(w[1:].split()[0]))
+    launcher.run("--no-attach")
+    left = launcher.tmux("list-windows", "-t", SESSION, "-F", "#{window_id} #{window_name}").stdout
+    assert [w for w in left.split("\n") if w.endswith(" VOICE")] == [oldest]
+
+
 def test_health_switched_off_starts_the_server_without_its_log(launcher):
     """With `[health] enabled = false` no watcher
     runs to cap tmux's -v log, so the launcher must not turn that log on."""

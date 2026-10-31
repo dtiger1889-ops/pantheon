@@ -40,12 +40,12 @@ def _pane_hold() -> str:
 
 def test_every_crash_wrapper_ends_on_the_server_pid_not_the_socket():
     # A server started after a freeze listens on the same socket path, so a socket check answered
-    # for the dead server and four wrappers lived on (2026-10-05). All four tails use PANE_HOLD,
-    # which runs no tmux client and so reads no terminal input.
+    # for the dead server and four wrappers lived on (2026-10-05). Every tail (the VOICE window's
+    # made five) uses PANE_HOLD, which runs no tmux client and so reads no terminal input.
     source = LAUNCHER.read_text()
     tails = [l for l in source.splitlines()
              if "press Enter to close" in l and not l.lstrip().startswith("#")]
-    assert len(tails) == 4
+    assert len(tails) == 5
     assert all("$PANE_HOLD'" in l and "has-session" not in l for l in tails)
     hold = _pane_hold()
     assert "'" not in hold and "tmux" not in hold and 'kill -0 "$P"' in hold

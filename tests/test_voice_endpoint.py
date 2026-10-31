@@ -136,6 +136,11 @@ def test_a_voice_table_that_does_not_parse_still_opens_the_window_to_show_why(mo
     assert ve.should_autostart(config_mod.Config(voice={"enabled": True, "port": 70000})) is True
 
 
+def test_a_test_deck_never_opens_the_window_even_for_a_voice_table_that_does_not_parse(monkeypatch):
+    monkeypatch.setenv("PANTHEON_ASSISTANT", "off")
+    assert ve.should_autostart(config_mod.Config(voice={"enabled": True, "port": 70000})) is False
+
+
 def test_main_does_not_listen_when_disabled(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(config_mod, "load", lambda: config_mod.Config(state_dir=str(tmp_path)))
     monkeypatch.setattr(ve, "make_server", lambda *a, **k: pytest.fail("must not start a server"))

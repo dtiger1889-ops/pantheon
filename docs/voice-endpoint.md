@@ -98,7 +98,9 @@ from HACS and give it the same address as its "Base Url" and the same token as i
   playing and logs outcomes, never words, to `%TEMP%\pantheon_voice_say.log`. If it can't start,
   the puck says the answer itself. On this PC it unmutes the speakers and sets them to 50% while
   the answer plays, then puts mute and volume back the way they were
-  (`-SystemVolume` changes the 50, 0 leaves the speakers alone).
+  (`-SystemVolume` changes the 50, 0 leaves the speakers alone). If the player is killed before it
+  can put them back, they stay at 50% until the next answer ends, which restores them (unless they
+  were changed by hand in between, which it then keeps).
 - The answer is read out with formatting, code and web links taken out. A long answer is cut at a
   sentence, followed by "The rest is in the Claude app."
 - It types into the Assistant only when the Assistant is idle with nothing typed and no question
