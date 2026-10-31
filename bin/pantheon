@@ -457,9 +457,14 @@ if [ "$VOICE_ON" = True ]; then
   fi
 fi
 # Two launches at once can both find VOICE missing and both open it: every launch keeps the oldest
-# (lowest window id) and closes the rest, so the racers agree on which one stays.
-tmux list-windows -t "$SESSION" -F "#{window_id} #{window_name}" 2>/dev/null | awk '$2 == "VOICE" { print substr($1, 2) }' \
-  | sort -n | tail -n +2 | while read -r W; do tmux kill-window -t "@$W"; done
+# (lowest window id) and closes the rest, so the racers agree on which one stays. The kept one may be
+# the endpoint that lost the port to a closed one, so it starts again once the rest are gone.
+EXTRA_VOICE="$(tmux list-windows -t "$SESSION" -F "#{window_id} #{window_name}" 2>/dev/null \
+  | awk '$2 == "VOICE" { print substr($1, 2) }' | sort -n | tail -n +2)"
+if [ -n "$EXTRA_VOICE" ]; then
+  for W in $EXTRA_VOICE; do tmux kill-window -t "@$W"; done
+  [ "$VOICE_ON" = True ] && tmux respawn-window -k -t "$SESSION:=VOICE" -c "$ROOT" "$VOICE_CMD"
+fi
 # Windows the deck opens (o, dispatch) get bash, not the server's default shell (pwsh on this box).
 tmux set-option -t "$SESSION" default-shell /usr/bin/bash
 tmux set-option -t "$SESSION" default-command /usr/bin/bash

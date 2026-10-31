@@ -218,25 +218,35 @@ function Use-Speakers([bool]$start) {
     $others = @(if ($saved) { Get-LiveHolders $saved | Where-Object { $_ -ne $me } })
     if ($start) {
       # A file nobody alive holds is left by a player that never put the speakers back. Its saved state
-      # is still the one to return to only while the speakers show what that player set (unmuted at
-      # this level); changed by hand since, start again from what they are now.
+      # is still the one to return to only while its device shows what that player set (unmuted at
+      # the level it applied); changed by hand since, start again from what they are now. A device
+      # no longer the default is put back now, and this answer starts from the new default.
       if ($saved -and -not $others) {
         $dev = [string]$saved.device
-        $untouched = $dev -and $dev -eq [PantheonSpeakers]::DefaultId() -and -not [PantheonSpeakers]::GetMuted($dev) -and
-          [math]::Abs([PantheonSpeakers]::GetLevel($dev) - $SystemVolume / 100.0) -lt 0.01
+        $applied = if ($null -ne $saved.applied) { [double]$saved.applied } else { $SystemVolume / 100.0 }
+        $untouched = $false
+        try {
+          $untouched = $dev -and -not [PantheonSpeakers]::GetMuted($dev) -and
+            [math]::Abs([PantheonSpeakers]::GetLevel($dev) - $applied) -lt 0.01
+        } catch { }
+        if ($untouched -and $dev -ne [PantheonSpeakers]::DefaultId()) {
+          [PantheonSpeakers]::Set($dev, [float]$saved.level, [bool]$saved.muted); $untouched = $false
+        }
         if (-not $untouched) { $saved = $null }
       }
       if (-not $saved) {
         $dev = [PantheonSpeakers]::DefaultId()
         $saved = [pscustomobject]@{ device = $dev; level = [PantheonSpeakers]::GetLevel($dev); muted = [PantheonSpeakers]::GetMuted($dev) }
       }
-      [pscustomobject]@{ device = $saved.device; level = $saved.level; muted = $saved.muted; holders = @($others + $me) } |
+      [pscustomobject]@{ device = $saved.device; level = $saved.level; muted = $saved.muted; applied = $SystemVolume / 100.0
+        holders = @($others + $me) } |
         ConvertTo-Json -Compress | Out-File -FilePath $speakerFile -Encoding ascii -Force
       [PantheonSpeakers]::Set([string]$saved.device, $SystemVolume / 100.0, $false)
       Note ("speakers at {0}% unmuted (were {1:N0}%{2})" -f $SystemVolume, ($saved.level * 100), $(if ($saved.muted) { ', muted' } else { '' }))
     } elseif ($saved) {
       if ($others) {
-        [pscustomobject]@{ device = $saved.device; level = $saved.level; muted = $saved.muted; holders = $others } |
+        [pscustomobject]@{ device = $saved.device; level = $saved.level; muted = $saved.muted; applied = $saved.applied
+          holders = $others } |
           ConvertTo-Json -Compress | Out-File -FilePath $speakerFile -Encoding ascii -Force
       } else {
         [PantheonSpeakers]::Set([string]$saved.device, [float]$saved.level, [bool]$saved.muted)
