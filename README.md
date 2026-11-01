@@ -8,6 +8,12 @@ A terminal command deck for running several coding agents at once, from your des
 
 When I run several agents in parallel on a subscription plan, the hard part is keeping track of which session needs an answer, how fast I'm burning through the 5-hour and weekly limits, and what to hand out next. My tasks already live in an Obsidian vault, so Pantheon reads them from there instead of asking me to keep a second tracker.
 
+## Start here
+
+Pantheon is an application you run in MSYS2/tmux, not an agent skill. Follow Requirements and Install below, then run `bin/pantheon --keys` from this repo to check the launcher and see the controls. Run `bin/pantheon` to open the first-run configuration wizard and deck. Launching or managing agents is a separate action inside the deck.
+
+If an agent is helping with setup, ask it: "Read this README and pantheon.example.toml, check my MSYS2 requirements, and propose the configuration. Do not change hooks, restart tmux or launch agent sessions yet." Integration is specific to the Claude Code and Codex paths described below; other agent products are not automatically supported.
+
 ## Features
 
 - **THE PIT**: every Claude Code session and Codex job, two lines each at desk width: its title, then one state word (working, blocked, waiting, done, idle) with provider, project, age and what it is doing in plain words. `done` turns to `idle` once you've looked at it, and `f` swaps to a column table. Sessions waiting on you are flagged from Claude Code's own hook events, not guessed from silence. Jump to, answer, kill, or hand off any session from its row.
@@ -109,6 +115,10 @@ Tests: `.venv/bin/python -m pytest -q`
 ## Related
 
 - [agent-deck-comparison](https://github.com/dtiger1889-ops/agent-deck-comparison): Pantheon next to Orca, VelaTerm, Paseo and other agent managers.
+
+## Help
+
+For setup questions or errors, [open an issue](https://github.com/dtiger1889-ops/pantheon/issues) with the relevant versions and a redacted error description.
 
 ## License
 
