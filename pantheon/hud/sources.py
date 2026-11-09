@@ -351,7 +351,7 @@ def statusline_mtimes(directory) -> dict[str, float]:
 def statusline_line(data: dict, account: Optional[ProviderUsage] = None,
                     now: Optional[float] = None) -> str:
     """The one short line `bin/statusline_capture` prints back so Claude Code's own status bar
-    keeps working, e.g. `5h 61% · wk 44% · ctx 32% · $27.18 · Fable 5.1`.
+    keeps working, e.g. `5h 61% · wk 44% · ctx 32% · $27.18 · Fable 5.2`.
 
     The 5-hour and weekly numbers are account-wide, so they come from `account` (what
     `claude_from_statusline` reads over every capture) when given: an idle session's own payload

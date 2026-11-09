@@ -145,7 +145,7 @@ async def test_path_a_new_claude_with_choices_starts_with_them_as_flags(tmp_path
             await pilot.press(ch if ch != " " else "space")
         await pilot.press("enter")
         await wait_launch(app, claude, pilot)
-    assert claude.calls and claude.calls[0]["options"] == {"start_model": "claude-fable-5-1", "start_effort": "high", "start_mode": "auto"}
+    assert claude.calls and claude.calls[0]["options"] == {"start_model": "claude-fable-5-2", "start_effort": "high", "start_mode": "auto"}
     assert claude.calls[0]["interactive"] is True
     assert Path(claude.calls[0]["briefing"]).read_text(encoding="utf-8").strip() == "read CHECKPOINT.md"
     assert typed.calls == []   # nothing typed after launch
