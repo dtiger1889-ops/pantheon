@@ -359,8 +359,48 @@ def _options(region: list[str]) -> tuple[list[str], int]:
 
 
 def send_key(target: str, key: str, tmux: Optional[str] = None) -> bool:
-    """One named key (`Down`, `Enter`, `Escape`) into a pane. Not `-l`: these are key names."""
+    """One named key (`Down`, `Up`, `Enter`) into a pane. Not `-l`: these are key names. Never
+    Escape: on a startup question Esc exits Claude Code (see `NO_MESSAGE`)."""
+    if key == "Escape":
+        return False
     return tmuxctl.run("send-keys", "-t", target, key, tmux=tmux).returncode == 0
+
+
+# Answering a startup question (2026-11-09, `docs/long-brief-loss.md` "Trust question"). Claude
+# Code draws the trust question before it takes keys: two Downs sent 1 and 2.5 s after it showed
+# were dropped (the cursor never left "No, exit"). So a yes waits for a still screen, then moves
+# ONE step at a time and checks the cursor moved, retrying with longer waits until MOVE_BUDGET
+# seconds are spent; Enter only after a fresh, still read shows the cursor on yes.
+STILL_SECONDS = 1.0        # the screen unchanged this long before the first key
+STILL_TIMEOUT = 8.0        # ...or go on after this long
+MOVE_BUDGET = 20.0         # total time spent pressing a step key and waiting for it to show
+GONE_TIMEOUT = 5.0         # after Enter, how long the question may stay drawn
+POLL = 0.5
+
+# What a "no" does: nothing. Esc on the trust question is its "Esc to cancel", and that EXITS
+# Claude Code (2026-11-09: the deck's "no" sent Escape, claude.exe exited, the pane kept the
+# frozen question and no key reached anything). Pantheon never sends Escape or picks "No, exit"
+# on a startup question; the person answers no in the window.
+NO_MESSAGE = "left the question open: no would close Claude; answer it in the window (j)"
+
+
+def _selection(screen: str, yes_option: str) -> tuple[int, int]:
+    """(selected index, yes index) in the menu on screen; -1 where not found."""
+    options, selected = _options(dialog_region(screen))
+    want = next((i for i, o in enumerate(options) if o.startswith(yes_option)), -1)
+    return selected, want
+
+
+def _still(target: str, capture, sleep, tmux, first: str, timeout: float) -> str:
+    """Read until the screen has not changed for STILL_SECONDS (or `timeout` passes); the last read."""
+    last, still, waited = first, 0.0, 0.0
+    while waited < timeout and still < STILL_SECONDS:
+        sleep(POLL)
+        waited += POLL
+        screen = capture(target, tmux=tmux)
+        still = still + POLL if screen == last else 0.0
+        last = screen
+    return last
 
 
 def answer(target: str, dialog: Dialog, yes: bool, tmux: Optional[str] = None,
@@ -368,10 +408,10 @@ def answer(target: str, dialog: Dialog, yes: bool, tmux: Optional[str] = None,
            capture: Callable[..., str] = tmuxctl.capture,
            press: Callable[..., bool] = send_key,
            settle: float = 1.0) -> tuple[bool, str]:
-    """Answer the dialog the way a person would, only after a fresh screen read shows it is still
-    up. Yes = move the cursor onto the dialog's own yes option, check it landed there, Enter.
-    No = Esc, the dialog's own cancel. `settle` waits first because Claude Code ignores keys for
-    a moment after a dialog opens (its confirm widget carries an `openedAt` input guard)."""
+    """Answer yes the way a person would, only after a fresh screen read shows the question is
+    still up: wait for a still screen, move the cursor onto the dialog's own yes option one step
+    at a time (each step checked, retried while Claude is not yet taking keys), re-read, Enter.
+    A no is never typed (`NO_MESSAGE`). `settle` is the first pause before any read."""
     if settle:
         sleep(settle)
     screen = capture(target, tmux=tmux)
@@ -379,29 +419,45 @@ def answer(target: str, dialog: Dialog, yes: bool, tmux: Optional[str] = None,
     if now is None or now.kind != dialog.kind:
         return False, "the question is no longer on screen"
     if not yes:
-        press(target, "Escape", tmux=tmux)
-        return True, "answered no"
+        return False, NO_MESSAGE
     if not dialog.yes_option:
         return False, "this question has no one-key yes; answer it in the window"
-    for _attempt in range(2):
-        options, selected = _options(dialog_region(screen))
-        want = next((i for i, o in enumerate(options) if o.startswith(dialog.yes_option)), -1)
+    screen = _still(target, capture, sleep, tmux, screen, STILL_TIMEOUT)
+    spent, wait, presses = 0.0, 1.0, 0
+    while True:
+        now = detect(screen)
+        if now is None or now.kind != dialog.kind:
+            return False, "the question went away before it was answered"
+        selected, want = _selection(screen, dialog.yes_option)
         if selected < 0 or want < 0:
             return False, "could not find the yes option on screen"
-        if want != selected:
-            key = "Down" if want > selected else "Up"
-            for _ in range(abs(want - selected)):
-                press(target, key, tmux=tmux)
-            sleep(0.3)
+        if selected == want:
+            # Enter only on a still, fresh read that shows yes selected (a late key could move it).
+            screen = _still(target, capture, sleep, tmux, capture(target, tmux=tmux), 3.0)
+            selected, want = _selection(screen, dialog.yes_option)
+            if selected == want and selected >= 0:
+                break
+            continue
+        if spent >= MOVE_BUDGET:
+            return False, f"the cursor would not move onto yes ({presses} keys over {spent:.0f} s)"
+        press(target, "Down" if want > selected else "Up", tmux=tmux)
+        presses += 1
+        waited, before = 0.0, selected
+        while waited < wait:
+            sleep(POLL)
+            waited += POLL
             screen = capture(target, tmux=tmux)
-            options, selected = _options(dialog_region(screen))
-        if 0 <= selected < len(options) and options[selected].startswith(dialog.yes_option):
-            press(target, "Enter", tmux=tmux)
-            sleep(settle or 0.5)
-            after = detect(capture(target, tmux=tmux))
-            if after is not None and after.kind == dialog.kind:
-                return False, "pressed yes but the question is still on screen"
+            if _selection(screen, dialog.yes_option)[0] != before:
+                break
+        spent += waited
+        wait = min(wait + 0.5, 3.0)     # not taking keys yet: wait longer before the next try
+    press(target, "Enter", tmux=tmux)
+    waited = 0.0
+    while True:
+        sleep(POLL)
+        waited += POLL
+        after = detect(capture(target, tmux=tmux))
+        if after is None or after.kind != dialog.kind:
             return True, "answered yes"
-        sleep(settle or 0.5)       # the input guard swallowed the move; look again once
-        screen = capture(target, tmux=tmux)
-    return False, "the cursor would not move onto yes"
+        if waited >= GONE_TIMEOUT:
+            return False, "pressed yes but the question is still on screen"

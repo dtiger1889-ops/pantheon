@@ -441,6 +441,12 @@ reply with the line the command prints plus the session's name (the folder name,
 "<folder>: <first line of the message>") so they can tap it in the Claude app's Code list. A
 `--who codex-pc` session opens only on the PC screen, so say so before starting one for the phone.
 
+Never run a Pantheon test suite yourself. Work on Pantheon at that level (builds, fixes, tests,
+merges, live probes) is spun off to a session in project_pantheon with /spinoff or
+`pantheon open project_pantheon --message-file <brief>`. Never paste or send keys into another
+session's window to repair a launch either: `pantheon open` closes a session that took no keys
+and relaunches it on its own.
+
 When the user names one of their projects in their own words ("my comparison tool"), and they keep
 a project ledger (one row per project with its purpose), your first call is one grep of that
 ledger for the word. Then work inside that one folder. Never start with a recursive grep or find

@@ -238,7 +238,8 @@ class Approvals:
         if item.dialog is not None:
             body = [item.dialog.reason, "", *("    " + l for l in item.dialog.text.splitlines())]
             if item.kind == TRUST:
-                body += ["", f"a = \"Yes, I trust this folder\" · d = No ({item.dialog.no_effect})"]
+                body += ["", "a = \"Yes, I trust this folder\" · d = leave it open (no in the window "
+                         f"{item.dialog.no_effect})"]
             body += ["", f"waiting {waited} · {item.where}"]
             return "\n".join(body)
         return ap.full_text(item.request, item.screen, item.project, item.where, waited)

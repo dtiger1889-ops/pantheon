@@ -146,7 +146,305 @@ class FakeTmux:
 
 
 def _typed(fake: FakeTmux) -> list[str]:
-    return [c[4] for c in fake.calls if c[0] == "send-keys" and "-l" in c]
+    """Typed lines (`send-keys -l`) and pasted briefings (`set-buffer ... -- text`), in order."""
+    return [c[4] for c in fake.calls if (c[0] == "send-keys" and "-l" in c) or c[0] == "set-buffer"]
+
+
+def test_claude_launch_pastes_a_long_briefing_whole(tmp_path, monkeypatch):
+    """A 4k briefing goes in as one bracketed paste, not typed key by key (2026-10-29/30: long
+    briefs were never submitted or arrived as their tails)."""
+    cfg = cfg_for(tmp_path)
+    fake = FakeTmux(screens=["starting...", "│ > \n"], commands=["bash", "bash", "node"])
+    monkeypatch.setattr(tmuxctl, "run", fake.run)
+    brief = tmp_path / "b.md"
+    brief.write_text("word " * 800, encoding="utf-8")
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch("C:/p", str(brief), True)
+    assert result.ok
+    sets = [c for c in fake.calls if c[0] == "set-buffer"]
+    pastes = [c for c in fake.calls if c[0] == "paste-buffer"]
+    assert len(sets) == 1 and sets[0][4] == ("word " * 800).strip()
+    assert len(pastes) == 1 and "-p" in pastes[0] and sets[0][2] == pastes[0][pastes[0].index("-b") + 1]
+    assert not any(c[4] == sets[0][4] for c in fake.calls if c[0] == "send-keys" and "-l" in c)
+
+
+# ------------------------------------------------- briefing delivery: ready, verify, retry
+
+PROJECT = "C:/Users/x/Documents/Claude/brief_probe"
+BOX = "───\n> Try \"fix typecheck errors\"\n───\n  5h 2% · wk 78%\n"
+SESSION_START = '{"type":"attachment","attachment":{"type":"hook_success"}}\n'
+USER_LINE = '{"type":"user","message":{"role":"user","content":"the brief"}}\n'
+
+
+class DeliveryTmux(FakeTmux):
+    """A Claude pane whose startup and delivery are scripted against a real transcript folder:
+    the transcript appears after `start_after` captures; `deliver_on` names which brief-Enter
+    (1 = the first after a paste) makes Claude write the user message, `working_on` which one
+    makes the pane show Claude working instead; None = never."""
+
+    def __init__(self, folder: Path, start_after=0, deliver_on=1, working_on=None, box=BOX):
+        super().__init__(screens=[box], commands=["node"])
+        self.folder, self.start_after = folder, start_after
+        self.deliver_on, self.working_on = deliver_on, working_on
+        self.captures = 0
+        self.pasted = False
+        self.brief_enters = 0
+        self.transcript_at_paste = []
+        self.file = folder / "11111111-new.jsonl"
+        self.kills = []
+
+    def run(self, *args, tmux=None, check=False):
+        if args[0] == "capture-pane":
+            self.captures += 1
+            if self.captures > self.start_after and not self.file.exists():
+                self.folder.mkdir(parents=True, exist_ok=True)
+                self.file.write_text(SESSION_START, encoding="utf-8")
+        elif args[0] == "kill-window":
+            # the dead session's window is closed: the relaunch writes a transcript of its own
+            self.kills.append(args)
+            self.pasted = False
+            self.file = self.folder / f"{len(self.kills) + 1:08d}-relaunch.jsonl"
+        elif args[0] == "paste-buffer":
+            self.pasted = True
+            self.transcript_at_paste.append(self.file.exists())
+        elif args[0] == "send-keys" and args[-1] == "Enter" and "-l" not in args and self.pasted:
+            self.brief_enters += 1
+            if self.brief_enters == self.deliver_on:
+                with open(self.file, "a", encoding="utf-8") as fh:
+                    fh.write(USER_LINE)
+            if self.brief_enters == self.working_on:
+                self.screens = ["✻ Thinking… (esc to interrupt)\n" + BOX]
+        return super().run(*args, tmux=tmux, check=check)
+
+
+def _delivery_setup(tmp_path, monkeypatch, **kw):
+    monkeypatch.setattr(claude_mod, "VERIFY_DELIVERY", True)
+    home = tmp_path / "claude_home"
+    folder = home / "projects" / "C--Users-x-Documents-Claude-brief-probe"
+    fake = DeliveryTmux(folder, **kw)
+    monkeypatch.setattr(tmuxctl, "run", fake.run)
+    brief = tmp_path / "b.md"
+    brief.write_text("the brief", encoding="utf-8")
+    cfg = cfg_for(tmp_path, claude_home=str(home))
+    return cfg, fake, brief
+
+
+def _pastes(fake):
+    return [c for c in fake.calls if c[0] == "paste-buffer"]
+
+
+def test_transcript_folder_maps_the_path_like_claude_code(tmp_path):
+    home = tmp_path / "h"
+    assert claude_mod.transcript_folder(str(home), "C:/Users/x/Documents/Projects/notes_app").name \
+        == "C--Users-x-Documents-Projects-notes-app"
+    assert claude_mod.transcript_folder(str(home), "/c/Users/x/Documents/Projects/hiking_log").name \
+        == "C--Users-x-Documents-Projects-hiking-log"
+    assert claude_mod.transcript_folder(str(home), "C:\\Users\\x\\Apps\\Smart home").name \
+        == "C--Users-x-Apps-Smart-home"
+
+
+def test_claude_launch_pastes_only_after_the_session_has_started_and_the_box_settled(tmp_path, monkeypatch):
+    """The box draws before startup is over (2026-11-09: a brief typed 0.5 s before the
+    SessionStart records was lost whole); the paste waits for the transcript and a still screen."""
+    cfg, fake, brief = _delivery_setup(tmp_path, monkeypatch, start_after=6)
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok and result.message == "claude is working in window 4 (brief_probe)"
+    assert fake.transcript_at_paste == [True]
+    assert fake.captures > 6
+
+
+def test_claude_launch_counts_the_pane_working_as_delivered(tmp_path, monkeypatch):
+    cfg, fake, brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=None, working_on=1)
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok and "claude is working in window 4" in result.message
+    assert len(_pastes(fake)) == 1
+
+
+def test_claude_launch_waits_for_a_slow_submit_before_any_retry(tmp_path, monkeypatch):
+    """Slow is not dead (a paste once took ~40 s): no extra Enter or paste inside the wait."""
+    cfg, fake, brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=None)
+    slept = []
+
+    def sleep(s):
+        slept.append(s)
+        if sum(slept) > 40 and not fake.file.read_text(encoding="utf-8").count('"user"'):
+            with open(fake.file, "a", encoding="utf-8") as fh:
+                fh.write(USER_LINE)
+
+    result = claude_mod.ClaudeProvider(cfg, sleep=sleep).launch(PROJECT, str(brief), True)
+    assert result.ok
+    assert fake.brief_enters == 1 and len(_pastes(fake)) == 1
+
+
+def test_claude_launch_presses_enter_once_more_when_nothing_arrived(tmp_path, monkeypatch):
+    cfg, fake, brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=2,
+                                       box="───\n> the brief\n───\n")
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok
+    assert fake.brief_enters == 2 and len(_pastes(fake)) == 1
+
+
+def test_claude_launch_pastes_once_more_into_the_same_window_when_the_box_is_empty(tmp_path, monkeypatch):
+    cfg, fake, brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=3)
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok
+    assert len(_pastes(fake)) == 2
+    assert len([c for c in fake.calls if c[0] == "new-window"]) == 1   # never a second session
+
+
+def test_claude_launch_does_not_paste_again_over_text_still_in_the_box(tmp_path, monkeypatch):
+    cfg, fake, brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=None,
+                                       box="───\n> the brief\n───\n")
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok is False
+    assert len(_pastes(fake)) == 2              # one per attempt, never a re-paste over text
+
+
+def _events(cfg) -> list[dict]:
+    path = Path(cfg.events_file)
+    if not path.exists():
+        return []
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+def test_claude_launch_says_plainly_when_the_brief_never_arrived_twice(tmp_path, monkeypatch):
+    """Both sessions take no keys: the first (dead, its own, empty) window is closed, the second
+    is left open, and the message says it was tried twice."""
+    cfg, fake, brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=None)
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok is False
+    assert result.message == "window 4 opened but the brief was not delivered (tried twice)"
+    assert result.window_index == 4 and result.tmux_pane == "%9"
+    assert len(_pastes(fake)) == 4 and fake.brief_enters == 6
+    assert len([c for c in fake.calls if c[0] == "new-window"]) == 2
+    assert fake.kills == [("kill-window", "-t", "%9")]          # exactly one window closed
+    names = [e["event"] for e in _events(cfg)]
+    assert names == ["brief_not_delivered", "dead_window_closed", "brief_not_delivered"]
+    assert _events(cfg)[2]["dead_pane"] == "%9" and _events(cfg)[2]["attempt"] == 2
+
+
+def test_a_dead_first_session_is_closed_and_the_relaunch_delivers(tmp_path, monkeypatch):
+    # attempt 1 spends three Enters (submit, retry, re-paste); the relaunch's first Enter is #4
+    cfg, fake, brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=4)
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok, result.message
+    assert result.message == "claude is working in window 4 (brief_probe)"
+    assert fake.kills == [("kill-window", "-t", "%9")]
+    assert len([c for c in fake.calls if c[0] == "new-window"]) == 2
+    events = _events(cfg)
+    assert [e["event"] for e in events] == ["brief_not_delivered", "dead_window_closed",
+                                            "brief_delivered_on_retry"]
+    assert events[0]["tmux_pane"] == "%9" and events[2]["dead_pane"] == "%9"
+
+
+class MovedPaneTmux(DeliveryTmux):
+    """After the launch opened its window, a different pane sits at that index (the window was
+    closed and the index reused): the launch must not close it."""
+
+    def __init__(self, folder):
+        super().__init__(folder, deliver_on=None)
+        self.pane_reads = 0
+
+    def run(self, *args, tmux=None, check=False):
+        if args[0] == "display-message" and "pane_id" in args[-1]:
+            import subprocess
+            self.calls.append(args)
+            self.pane_reads += 1
+            return subprocess.CompletedProcess(args, 0, "%9\n" if self.pane_reads == 1 else "%12\n", "")
+        return super().run(*args, tmux=tmux, check=check)
+
+
+def test_the_launcher_never_closes_a_window_it_did_not_create(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_mod, "VERIFY_DELIVERY", True)
+    home = tmp_path / "claude_home"
+    fake = MovedPaneTmux(home / "projects" / "C--Users-x-Documents-Claude-brief-probe")
+    monkeypatch.setattr(tmuxctl, "run", fake.run)
+    brief = tmp_path / "b.md"
+    brief.write_text("the brief", encoding="utf-8")
+    cfg = cfg_for(tmp_path, claude_home=str(home))
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok is False and result.message == "window 4 opened but the brief was not delivered"
+    assert fake.kills == [] and not any(c[0] == "kill-window" for c in fake.calls)
+    assert len([c for c in fake.calls if c[0] == "new-window"]) == 1
+
+
+def test_a_plain_session_with_no_brief_is_never_checked_or_closed(tmp_path, monkeypatch):
+    cfg, fake, _brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=None)
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, "", True)
+    assert result.ok and "claude is open in window 4" in result.message
+    assert fake.kills == [] and _events(cfg) == []
+
+
+class NewFolderTmux(DeliveryTmux):
+    """A never-trusted folder: the trust question shows first and drops the first `swallow` keys
+    (Claude not taking input yet); Enter on yes starts the session (transcript written) and shows
+    the prompt box; an Escape would exit Claude."""
+
+    def __init__(self, folder: Path, swallow: int = 3):
+        super().__init__(folder, start_after=10_000)
+        self.screens = [TRUST_SCREEN]
+        self.swallow = swallow
+        self.trust_keys = []
+        self.exited = False
+        self.shown = False          # keys count once the question has been read off the screen
+
+    def run(self, *args, tmux=None, check=False):
+        if args[0] == "capture-pane":
+            self.shown = True
+        if self.shown and args[0] == "send-keys" and "-l" not in args and not self.pasted and \
+                args[-1] in ("Down", "Up", "Enter", "Escape"):
+            screen = self.screens[0]
+            if "trust this folder" in screen:
+                self.trust_keys.append(args[-1])
+                if self.swallow:
+                    self.swallow -= 1
+                elif args[-1] == "Escape":
+                    self.exited = True
+                    self.screens = ["bash-5.3$ "]
+                elif args[-1] == "Down":
+                    self.screens = [screen.replace(" > No, exit", "   No, exit").replace(
+                        "   Yes, I trust this folder", " > Yes, I trust this folder")]
+                elif args[-1] == "Enter" and " > Yes, I trust this folder" in screen:
+                    self.screens = [BOX]
+                    self.folder.mkdir(parents=True, exist_ok=True)
+                    self.file.write_text(SESSION_START, encoding="utf-8")
+        return super().run(*args, tmux=tmux, check=check)
+
+
+def test_a_new_folder_launch_answers_trust_after_dropped_keys_then_delivers_the_brief(tmp_path, monkeypatch):
+    """2026-11-09, a never-trusted folder: two Downs were dropped and the launch gave up; now the answer
+    retries until the cursor moves, and the same launch pastes and delivers the brief."""
+    monkeypatch.setattr(claude_mod, "VERIFY_DELIVERY", True)
+    home = tmp_path / "claude_home"
+    folder = home / "projects" / "C--Users-x-Documents-Claude-brief-probe"
+    fake = NewFolderTmux(folder, swallow=3)
+    monkeypatch.setattr(tmuxctl, "run", fake.run)
+    brief = tmp_path / "b.md"
+    brief.write_text("the brief", encoding="utf-8")
+    cfg = cfg_for(tmp_path, claude_home=str(home))
+    result = claude_mod.ClaudeProvider(cfg, sleep=lambda s: None).launch(PROJECT, str(brief), True)
+    assert result.ok, result.message
+    assert result.message == "claude is working in window 4 (brief_probe)"
+    assert fake.trust_keys == ["Down"] * 4 + ["Enter"]
+    assert "Escape" not in fake.trust_keys and not fake.exited
+    assert fake.transcript_at_paste == [True] and len(_pastes(fake)) == 1
+
+
+def test_pantheon_open_exits_nonzero_when_the_brief_never_arrived(tmp_path, monkeypatch, capsys):
+    from pantheon.dispatch import projects as projects_mod
+
+    cfg, fake, _brief = _delivery_setup(tmp_path, monkeypatch, deliver_on=None)
+    project = tmp_path / "brief_probe"
+    project.mkdir()
+    cfg = cfg_for(tmp_path, claude_home=cfg.claude_home, projects_root=str(tmp_path))
+    monkeypatch.setattr(projects_mod, "get_providers",
+                        lambda c: {"claude": claude_mod.ClaudeProvider(c, sleep=lambda s: None)})
+    monkeypatch.setattr(config_mod, "load", lambda *a, **k: cfg)
+    brief = tmp_path / "msg.md"
+    brief.write_text("reply only: ok", encoding="utf-8")
+    rc = projects_mod.main(["open", "brief_probe", "--message-file", str(brief)])
+    out = capsys.readouterr().out
+    assert rc != 0
+    assert out.strip() == "window 4 opened but the brief was not delivered (tried twice)"
 
 
 def test_claude_launch_opens_cds_starts_waits_then_types_the_briefing(tmp_path, monkeypatch):

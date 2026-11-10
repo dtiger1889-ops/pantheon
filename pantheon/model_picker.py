@@ -72,7 +72,6 @@ class Family:
 CLAUDE_FAMILIES = [Family("claude", "Fable", "f"), Family("claude", "Opus", "o"),
                    Family("claude", "Sonnet", "s"), Family("claude", "Haiku", "h")]
 CLAUDE_MODELS = [
-    ModelChoice("claude", "Fable", "5.2", "claude-fable-5-2"),
     ModelChoice("claude", "Fable", "5.1", "claude-fable-5-1"),
     ModelChoice("claude", "Fable", "5", "claude-fable-5"),
     ModelChoice("claude", "Opus", "5.5", "claude-opus-5-5"),

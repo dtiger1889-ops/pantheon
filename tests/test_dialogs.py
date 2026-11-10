@@ -74,18 +74,20 @@ def test_the_options_block_and_cursor_are_read_from_the_real_screens():
 class FakePane:
     """A pane showing the real trust screen that reacts to Down/Up/Enter/Escape like Claude does."""
 
-    def __init__(self, screen: str = TRUST, swallow_first: bool = False):
+    def __init__(self, screen: str = TRUST, swallow_first: bool = False, swallow: int = 0):
         self.screen = screen
         self.keys: list[str] = []
-        self.swallow_first = swallow_first
+        self.swallow = swallow or (1 if swallow_first else 0)   # keys dropped before input is live
+        self.reads = 0
 
     def capture(self, target, tmux=None):
+        self.reads += 1
         return self.screen
 
     def press(self, target, key, tmux=None):
         self.keys.append(key)
-        if self.swallow_first:
-            self.swallow_first = False
+        if self.swallow:
+            self.swallow -= 1
             return True
         if key == "Down":
             self.screen = self.screen.replace(" > No, exit", "   No, exit").replace(
@@ -123,10 +125,48 @@ def test_a_swallowed_first_key_is_retried_once_before_enter():
     assert pane.keys == ["Down", "Down", "Enter"]
 
 
-def test_no_is_the_dialogs_own_escape():
+def test_keys_sent_before_claude_takes_input_are_retried_until_one_lands():
+    """2026-11-09, a never-trusted folder: Claude dropped the first Downs (input not live yet); the answer
+    keeps pressing one step at a time, checking the cursor, and only then presses Enter."""
+    pane = FakePane(swallow=5)
+    ok, why = _answer(pane)
+    assert ok, why
+    assert pane.keys == ["Down"] * 6 + ["Enter"]
+    assert pane.screen == NORMAL
+
+
+def test_it_waits_for_a_still_screen_before_the_first_key():
     pane = FakePane()
-    ok, _ = _answer(pane, yes=False)
-    assert ok and pane.keys == ["Escape"]
+    _answer(pane)
+    # the fresh read, then at least STILL_SECONDS of identical reads, before the first key
+    assert pane.reads >= 1 + int(dialogs.STILL_SECONDS / dialogs.POLL)
+
+
+def test_a_cursor_that_never_moves_gives_up_without_enter():
+    pane = FakePane(swallow=10_000)
+    ok, why = _answer(pane)
+    assert not ok and "would not move onto yes" in why
+    assert "Enter" not in pane.keys and set(pane.keys) == {"Down"}
+
+
+def test_no_never_types_anything_least_of_all_escape():
+    """Esc on the trust question is "Esc to cancel", which exits Claude Code (2026-11-09)."""
+    pane = FakePane()
+    ok, why = _answer(pane, yes=False)
+    assert not ok and pane.keys == [] and why == dialogs.NO_MESSAGE
+    assert pane.screen == TRUST
+
+
+def test_send_key_refuses_escape(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dialogs.tmuxctl, "run", lambda *a, **k: calls.append(a))
+    assert dialogs.send_key("t:1", "Escape") is False and calls == []
+
+
+def test_no_escape_is_ever_sent_on_the_answer_path():
+    import inspect
+    src = inspect.getsource(dialogs.answer)
+    assert "Escape" not in src
 
 
 def test_nothing_is_typed_when_the_question_is_already_gone():

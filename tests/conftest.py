@@ -46,6 +46,17 @@ def _tmux_is_never_real(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _brief_delivery_check_is_off(monkeypatch):
+    """A Claude launch checks that its briefing arrived by reading the new session's transcript
+    under `Config.claude_home` (the real `~/.claude` by default) and the pane. No test may read the
+    user's transcripts, and fake panes never show Claude working, so the check is off; the delivery
+    tests in tests/test_providers.py turn it back on with their own `claude_home`."""
+    from pantheon.providers import claude as claude_mod
+    monkeypatch.setattr(claude_mod, "VERIFY_DELIVERY", False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _dispatch_memory_is_never_real(monkeypatch, tmp_path):
     """The Assistant auto-finds Claude Desktop's Dispatch memory under %APPDATA%; tests must not
     see the user's real notes (a test that wants memory passes `[assistant] memory` explicitly)."""

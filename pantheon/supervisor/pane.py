@@ -1411,10 +1411,11 @@ class SupervisorPane(KeepAlive, Widget):
         """Enter on a row stuck on the folder-trust question: show it, answer with one key."""
         where = dialog.folder or row.cwd or row.project or "this folder"
         body = (f"{where}\nClaude Code will not start in window {row.window_index} until this is "
-                f"answered. Yes = \"Yes, I trust this folder\". No {dialog.no_effect}.")
+                f"answered. Yes = \"Yes, I trust this folder\". No leaves it open: saying no "
+                f"in the window {dialog.no_effect}.")
         self.app.push_screen(
             Confirm(f"Trust {row.project or 'this folder'}?", yes_label="Yes, trust it (y)",
-                    no_label="No, close Claude (n)", body=body),
+                    no_label="No, leave it open (n)", body=body),
             functools.partial(self._trust_answered, row.session_id, target, dialog))
 
     def _trust_answered(self, session_id: str, target: str, dialog, yes: Optional[bool]) -> None:
